@@ -8,6 +8,16 @@ function deriveKey(seed) {
   return crypto.createHash("sha256").update(String(seed)).digest();
 }
 
+export function getEncryptionConfigurationStatus(env = process.env) {
+  if (env.ACCOUNT_ENCRYPTION_KEY?.trim()) {
+    return { configured: true, source: "dedicated" };
+  }
+  if (resolveRedisCredentials(env)?.token) {
+    return { configured: true, source: "redis-token" };
+  }
+  return { configured: false, source: "unconfigured" };
+}
+
 export function getEncryptionSeed(env = process.env) {
   const explicit = env.ACCOUNT_ENCRYPTION_KEY?.trim();
   if (explicit) return explicit;
