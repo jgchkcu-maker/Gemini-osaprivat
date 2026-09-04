@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildGenerateEnvelope, parseCompositeRefreshToken, parseSseText } from "../src/antigravity/client.js";
+import { buildGenerateEnvelope, parseCompositeRefreshToken, parseSseText, LOCKED_MODEL } from "../src/antigravity/client.js";
 
 test("composite refresh tokens are parsed", () => {
   assert.deepEqual(parseCompositeRefreshToken("refresh|project|managed"), {
@@ -13,10 +13,11 @@ test("composite refresh tokens are parsed", () => {
 test("request is text-only and has no tools", () => {
   const envelope = buildGenerateEnvelope({
     projectId: "p",
-    model: "gemini-3.8-flash-high",
+    model: "some-other-model",
     systemPrompt: "critic only",
     userPrompt: "challenge this"
   });
+  assert.equal(LOCKED_MODEL, "gemini-3.8-flash-high");
   assert.equal(envelope.model, "gemini-3.8-flash-high");
   assert.equal(envelope.requestType, "agent");
   assert.equal(envelope.request.tools, undefined);
