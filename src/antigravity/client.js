@@ -54,10 +54,10 @@ function statusError(message, status) {
 }
 
 function oauthClient() {
-  const clientId = process.env.ANTIGRAVITY_OAUTH_CLIENT_ID?.trim();
-  const clientSecret = process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET?.trim();
+  const clientId = (process.env.ANTIGRAVITY_OAUTH_CLIENT_ID || process.env.ANTIGRAVITY_CLIENT_ID || "").trim();
+  const clientSecret = (process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || process.env.ANTIGRAVITY_CLIENT_SECRET || "").trim();
   if (!clientId || !clientSecret) {
-    throw new Error("ANTIGRAVITY_OAUTH_CLIENT_ID and ANTIGRAVITY_OAUTH_CLIENT_SECRET are required to refresh Antigravity accounts");
+    throw new Error("ANTIGRAVITY_CLIENT_ID/SECRET (or ANTIGRAVITY_OAUTH_CLIENT_ID/SECRET) are required to refresh Antigravity accounts");
   }
   return { clientId, clientSecret };
 }
@@ -126,7 +126,7 @@ async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey =
   throw lastError ?? new Error("Could not discover Antigravity project ID");
 }
 
-export function buildGenerateEnvelope({ projectId, systemPrompt, userPrompt }) {
+export function buildGenerateEnvelope({ projectId, model = LOCKED_MODEL, systemPrompt, userPrompt }) {
   return {
     project: projectId,
     model: LOCKED_MODEL,
@@ -164,7 +164,7 @@ export function parseSseText(raw) {
       if (Array.isArray(parsed)) parsed.forEach((item) => appendFinalText(item, chunks));
       else appendFinalText(parsed, chunks);
     } catch {
-      // A malformed event must not hide valid events that follow.
+      // Ignore malformed SSE events; valid events can still follow.
     }
   }
   return chunks.join("").trim();
@@ -176,35 +176,33 @@ function parseJsonResponse(data) {
   return chunks.join("").trim();
 }
 
-async function requestCritique(accessToken, projectId, systemPrompt, userPrompt) {
+async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt }) {
   const envelope = buildGenerateEnvelope({ projectId, systemPrompt, userPrompt });
   let lastError;
 
   for (const endpoint of endpointCandidates()) {
     try {
-      const response = await fetch(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
+      const streamResponse = await fetch(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
         method: "POST",
         headers: headers(accessToken, "text/event-stream"),
         body: JSON.stringify(envelope),
         signal: AbortSignal.timeout(55_000)
       });
-      if (response.ok) {
-        const text = parseSseText(await response.text());
+      if (streamResponse.ok) {
+        const text = parseSseText(await streamResponse.text());
         if (text) return text;
         lastError = new Error(`Antigravity returned an empty response from ${endpoint}`);
         continue;
       }
-      const detail = await response.text();
-      const error = statusError(`Antigravity API failed (${response.status}): ${detail}`, response.status);
-      if (response.status === 401 || response.status === 403) throw error;
+      const streamError = await streamResponse.text();
+      const error = statusError(`Antigravity API failed (${streamResponse.status}): ${streamError}`, streamResponse.status);
+      if (streamResponse.status >= 400 && streamResponse.status < 500 && streamResponse.status !== 429) throw error;
       lastError = error;
     } catch (error) {
-      if (error?.status === 401 || error?.status === 403) throw error;
       lastError = error;
+      if (Number(error?.status) >= 400 && Number(error?.status) < 500 && Number(error?.status) !== 429) throw error;
     }
   }
-
-  if (lastError?.status === 429) throw lastError;
 
   for (const endpoint of endpointCandidates()) {
     try {
@@ -215,17 +213,12 @@ async function requestCritique(accessToken, projectId, systemPrompt, userPrompt)
         signal: AbortSignal.timeout(55_000)
       });
       if (!response.ok) {
-        const detail = await response.text();
-        const error = statusError(`Antigravity fallback failed (${response.status}): ${detail}`, response.status);
-        if ([401, 403, 429].includes(response.status)) throw error;
-        lastError = error;
+        lastError = statusError(`Antigravity fallback failed (${response.status}): ${await response.text()}`, response.status);
         continue;
       }
       const text = parseJsonResponse(await response.json());
       if (text) return text;
-      lastError = new Error(`Antigravity returned an empty fallback response from ${endpoint}`);
     } catch (error) {
-      if ([401, 403, 429].includes(error?.status)) throw error;
       lastError = error;
     }
   }
@@ -233,68 +226,81 @@ async function requestCritique(accessToken, projectId, systemPrompt, userPrompt)
   throw lastError ?? new Error("Antigravity request failed");
 }
 
-async function generateFromPool({ systemPrompt, userPrompt }) {
-  const pool = await getPoolStatus();
-  if (!pool.total) return null;
-
-  let lastError;
-  for (let attempt = 0; attempt < pool.total; attempt += 1) {
-    let account;
-    try {
-      account = await getAccountForRequest();
-    } catch (error) {
-      lastError = error;
-      break;
-    }
-    try {
-      const accessToken = await refreshAccessToken(account.refreshTokenPlain, account.id);
-      const projectId = await discoverProjectId(accessToken, account.projectId, account.id);
-      const text = await requestCritique(accessToken, projectId, systemPrompt, userPrompt);
-      await recordAccountSuccess(account.id);
-      return text;
-    } catch (error) {
-      lastError = error;
-      const status = Number(error?.status || 0);
-      if ([401, 403, 429].includes(status)) {
-        tokenCache.delete(account.id);
-        await recordAccountFailure(account.id, status);
-        continue;
-      }
-      throw error;
-    }
-  }
-  throw lastError ?? new Error("No Antigravity account could complete the request");
-}
-
-async function generateFromLegacyEnv({ systemPrompt, userPrompt }) {
+async function legacyCredential() {
   const direct = process.env.ANTIGRAVITY_ACCESS_TOKEN?.trim();
   const composite = parseCompositeRefreshToken(process.env.ANTIGRAVITY_REFRESH_TOKEN ?? "");
-  const accessToken = direct || (composite.refreshToken ? await refreshAccessToken(composite.refreshToken, "legacy") : "");
-  if (!accessToken) throw new Error("Add an account in the dashboard or set legacy Antigravity credentials");
-  const explicitProject = process.env.ANTIGRAVITY_PROJECT_ID?.trim() || composite.managedProjectId || composite.projectId || "";
-  const projectId = await discoverProjectId(accessToken, explicitProject, "legacy");
-  return requestCritique(accessToken, projectId, systemPrompt, userPrompt);
-}
-
-export async function generateCriticText(input) {
-  if (isRedisConfigured()) {
-    const pool = await getPoolStatus();
-    if (pool.total > 0) return generateFromPool(input);
+  if (direct) {
+    return {
+      id: "legacy-access",
+      accessToken: direct,
+      projectId: process.env.ANTIGRAVITY_PROJECT_ID?.trim() || composite.managedProjectId || composite.projectId || ""
+    };
   }
-  return generateFromLegacyEnv(input);
+  if (!composite.refreshToken) return null;
+  return {
+    id: "legacy-refresh",
+    refreshToken: composite.refreshToken,
+    projectId: process.env.ANTIGRAVITY_PROJECT_ID?.trim() || composite.managedProjectId || composite.projectId || ""
+  };
 }
 
-export function getConfigurationStatus() {
-  const legacyConfigured = Boolean(
-    process.env.ANTIGRAVITY_ACCESS_TOKEN ||
-    (process.env.ANTIGRAVITY_REFRESH_TOKEN && process.env.ANTIGRAVITY_OAUTH_CLIENT_ID && process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET)
-  );
+async function resolveCredential(account) {
+  if (account?.refreshToken) {
+    const accessToken = await refreshAccessToken(account.refreshToken, account.id);
+    const projectId = await discoverProjectId(accessToken, account.projectId || "", account.id);
+    return { accessToken, projectId };
+  }
+  if (account?.accessToken) {
+    const projectId = await discoverProjectId(account.accessToken, account.projectId || "", account.id);
+    return { accessToken: account.accessToken, projectId };
+  }
+  throw new Error("Account contains no usable Antigravity credential");
+}
+
+export async function generateCriticText({ systemPrompt, userPrompt }) {
+  if (isRedisConfigured()) {
+    const pool = await getPoolStatus().catch(() => null);
+    if (pool?.total > 0) {
+      const attempts = Math.max(1, pool.total);
+      let lastError;
+      for (let i = 0; i < attempts; i += 1) {
+        const account = await getAccountForRequest();
+        if (!account) break;
+        try {
+          const { accessToken, projectId } = await resolveCredential(account);
+          const text = await callGenerate({ accessToken, projectId, systemPrompt, userPrompt });
+          await recordAccountSuccess(account.id).catch(() => {});
+          return text;
+        } catch (error) {
+          lastError = error;
+          const status = Number(error?.status) || 500;
+          await recordAccountFailure(account.id, status).catch(() => {});
+          if (status !== 429 && status !== 401 && status !== 403) throw error;
+        }
+      }
+      if (lastError) throw lastError;
+    }
+  }
+
+  const legacy = await legacyCredential();
+  if (!legacy) {
+    throw new Error("No active Antigravity accounts. Add an account in the dashboard or configure a legacy token.");
+  }
+  const { accessToken, projectId } = await resolveCredential(legacy);
+  return callGenerate({ accessToken, projectId, systemPrompt, userPrompt });
+}
+
+export async function getConfigurationStatus() {
+  let poolStatus = { total: 0, enabled: 0, ready: 0, needsLogin: 0, cooldown: 0 };
+  if (isRedisConfigured()) {
+    poolStatus = await getPoolStatus().catch(() => poolStatus);
+  }
   return {
-    configured: isRedisConfigured() || legacyConfigured,
+    configured: poolStatus.ready > 0 || Boolean(process.env.ANTIGRAVITY_ACCESS_TOKEN || process.env.ANTIGRAVITY_REFRESH_TOKEN),
     model: LOCKED_MODEL,
     modelLocked: true,
-    poolStorageConfigured: isRedisConfigured(),
-    oauthConfigured: Boolean(process.env.ANTIGRAVITY_OAUTH_CLIENT_ID && process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET),
+    pool: poolStatus,
+    redisConfigured: isRedisConfigured(),
     mcpProtected: Boolean(process.env.MCP_SHARED_SECRET)
   };
 }
