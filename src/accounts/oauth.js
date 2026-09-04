@@ -3,7 +3,7 @@ import { deleteKey, getJson, setJson } from "./redis.js";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const REDIRECT_URI = "http://localhost:51121/oauth-callback";
+const LEGACY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 const FLOW_TTL_SECONDS = 10 * 60;
 const SCOPES = [
   "https://www.googleapis.com/auth/aicode",
@@ -21,12 +21,26 @@ export function resolveOAuthCredentials(env = process.env) {
   return { clientId, clientSecret };
 }
 
-function oauthClient(env = process.env) {
-  const { clientId, clientSecret } = resolveOAuthCredentials(env);
-  if (!clientId || !clientSecret) {
-    throw new Error("Set ANTIGRAVITY_CLIENT_ID/SECRET (or ANTIGRAVITY_OAUTH_CLIENT_ID/SECRET) in Vercel to use browser OAuth");
-  }
+export function resolveWebOAuthCredentials(env = process.env) {
+  const clientId = (env.GOOGLE_OAUTH_CLIENT_ID || env.GOOGLE_WEB_CLIENT_ID || "").trim();
+  const clientSecret = (env.GOOGLE_OAUTH_CLIENT_SECRET || env.GOOGLE_WEB_CLIENT_SECRET || "").trim();
   return { clientId, clientSecret };
+}
+
+export function webOAuthRedirectUri(origin) {
+  const url = new URL(String(origin));
+  return `${url.origin}/api/accounts/oauth/callback`;
+}
+
+function oauthClient(clientKind = "antigravity", env = process.env) {
+  const credentials = clientKind === "web" ? resolveWebOAuthCredentials(env) : resolveOAuthCredentials(env);
+  if (!credentials.clientId || !credentials.clientSecret) {
+    if (clientKind === "web") {
+      throw new Error("Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in Vercel for one-click Google OAuth");
+    }
+    throw new Error("Set ANTIGRAVITY_CLIENT_ID/SECRET in Vercel for legacy Antigravity OAuth");
+  }
+  return credentials;
 }
 
 function metadataHeaders(accessToken) {
@@ -40,9 +54,14 @@ function metadataHeaders(accessToken) {
   };
 }
 
-export function isOAuthConfigured(env = process.env) {
-  const { clientId, clientSecret } = resolveOAuthCredentials(env);
+export function isWebOAuthConfigured(env = process.env) {
+  const { clientId, clientSecret } = resolveWebOAuthCredentials(env);
   return Boolean(clientId && clientSecret);
+}
+
+export function isOAuthConfigured(env = process.env) {
+  const legacy = resolveOAuthCredentials(env);
+  return isWebOAuthConfigured(env) || Boolean(legacy.clientId && legacy.clientSecret);
 }
 
 export function parseOAuthCallback(raw, expectedState) {
@@ -53,7 +72,7 @@ export function parseOAuthCallback(raw, expectedState) {
     url = new URL(input);
   } catch {
     const query = input.startsWith("?") ? input.slice(1) : input;
-    url = new URL(`${REDIRECT_URI}?${query}`);
+    url = new URL(`${LEGACY_REDIRECT_URI}?${query}`);
   }
   const providerError = url.searchParams.get("error");
   if (providerError) throw new Error(`OAuth provider error: ${providerError.slice(0, 120)}`);
@@ -64,29 +83,44 @@ export function parseOAuthCallback(raw, expectedState) {
   return { state, code };
 }
 
-export async function startOAuthFlow() {
-  const { clientId } = oauthClient();
+export async function startOAuthFlow({ origin } = {}) {
+  const useWeb = Boolean(origin && isWebOAuthConfigured());
+  const clientKind = useWeb ? "web" : "antigravity";
+  const { clientId } = oauthClient(clientKind);
+  const redirectUri = useWeb ? webOAuthRedirectUri(origin) : LEGACY_REDIRECT_URI;
   const verifier = crypto.randomBytes(32).toString("base64url");
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
   const state = crypto.randomBytes(32).toString("base64url");
-  await setJson(`gemini-critic:oauth:${state}`, { verifier, createdAt: Date.now() }, FLOW_TTL_SECONDS);
+
+  await setJson(
+    `gemini-critic:oauth:${state}`,
+    { verifier, createdAt: Date.now(), redirectUri, clientKind },
+    FLOW_TTL_SECONDS
+  );
 
   const params = new URLSearchParams({
     client_id: clientId,
     response_type: "code",
-    redirect_uri: REDIRECT_URI,
+    redirect_uri: redirectUri,
     scope: SCOPES.join(" "),
     code_challenge: challenge,
     code_challenge_method: "S256",
     state,
     access_type: "offline",
-    prompt: "consent"
+    include_granted_scopes: "true",
+    prompt: "consent select_account"
   });
-  return { state, authorizationUrl: `${AUTH_URL}?${params.toString()}` };
+
+  return {
+    state,
+    mode: useWeb ? "web" : "manual",
+    redirectUri,
+    authorizationUrl: `${AUTH_URL}?${params.toString()}`
+  };
 }
 
-async function exchangeCode(code, verifier) {
-  const { clientId, clientSecret } = oauthClient();
+async function exchangeCode(code, verifier, clientKind, redirectUri) {
+  const { clientId, clientSecret } = oauthClient(clientKind);
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -95,14 +129,18 @@ async function exchangeCode(code, verifier) {
       client_secret: clientSecret,
       code,
       grant_type: "authorization_code",
-      redirect_uri: REDIRECT_URI,
+      redirect_uri: redirectUri,
       code_verifier: verifier
     }),
     signal: AbortSignal.timeout(20_000)
   });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(`OAuth token exchange failed (${response.status}): ${body?.error_description || body?.error || "unknown error"}`);
-  if (!body.access_token || !body.refresh_token) throw new Error("Google did not return both access and refresh tokens");
+  if (!response.ok) {
+    throw new Error(`OAuth token exchange failed (${response.status}): ${body?.error_description || body?.error || "unknown error"}`);
+  }
+  if (!body.access_token || !body.refresh_token) {
+    throw new Error("Google did not return both access and refresh tokens. Remove the app from Google permissions and try again.");
+  }
   return body;
 }
 
@@ -142,22 +180,37 @@ export async function discoverProjectIdForToken(accessToken) {
   throw lastError ?? new Error("Could not discover Antigravity project ID");
 }
 
-export async function finishOAuthFlow(callbackUrl, expectedState) {
-  const { state, code } = parseOAuthCallback(callbackUrl, expectedState);
+async function completeOAuthCode(state, code) {
   const key = `gemini-critic:oauth:${state}`;
   const flow = await getJson(key);
-  if (!flow?.verifier) throw new Error("OAuth flow expired. Start Add account again.");
+  if (!flow?.verifier || !flow?.redirectUri || !flow?.clientKind) {
+    throw new Error("OAuth flow expired. Start Add account again.");
+  }
   await deleteKey(key);
-  const tokens = await exchangeCode(code, flow.verifier);
+
+  const tokens = await exchangeCode(code, flow.verifier, flow.clientKind, flow.redirectUri);
   const [email, projectId] = await Promise.all([
     fetchEmail(tokens.access_token),
     discoverProjectIdForToken(tokens.access_token)
   ]);
+
   return {
     email,
     projectId,
     refreshToken: tokens.refresh_token,
     accessToken: tokens.access_token,
-    expiresIn: Number(tokens.expires_in ?? 3600)
+    expiresIn: Number(tokens.expires_in ?? 3600),
+    oauthClientType: flow.clientKind
   };
+}
+
+export async function finishOAuthFlow(callbackUrl, expectedState) {
+  const { state, code } = parseOAuthCallback(callbackUrl, expectedState);
+  return completeOAuthCode(state, code);
+}
+
+export async function finishOAuthCallback({ state, code, error }) {
+  if (error) throw new Error(`OAuth provider error: ${String(error).slice(0, 120)}`);
+  if (!state || !code) throw new Error("OAuth callback is missing state or code");
+  return completeOAuthCode(state, code);
 }
