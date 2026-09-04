@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { deleteKey, getJson, setJson } from "./redis.js";
+import { embeddedAntigravityOAuthCredentials } from "./public-credentials.js";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
@@ -58,7 +59,12 @@ export function resolveOAuthCredentials(env = process.env) {
     "ANTIGRAVIT_ENT_SECRET"
   ]) || fuzzyAntigravityEnv(env, "clientSecret");
 
-  return { clientId, clientSecret };
+  // A custom native OAuth client is an atomic pair. Use it only when both
+  // halves are present; otherwise ignore stale/partial overrides and fall back
+  // to the complete embedded public client instead of mixing credentials.
+  if (clientId && clientSecret) return { clientId, clientSecret };
+
+  return embeddedAntigravityOAuthCredentials();
 }
 
 export function resolveWebOAuthCredentials(env = process.env) {
@@ -139,7 +145,7 @@ function oauthClient(clientKind = "antigravity", env = process.env) {
     if (clientKind === "web") {
       throw new Error("Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in Vercel for one-click Google OAuth");
     }
-    throw new Error("Set ANTIGRAVITY_CLIENT_ID/SECRET in Vercel for provider-native Antigravity OAuth");
+    throw new Error("Provider-native Antigravity OAuth client is unavailable");
   }
   return credentials;
 }

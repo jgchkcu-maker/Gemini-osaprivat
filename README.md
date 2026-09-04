@@ -32,7 +32,7 @@ Refresh credentials remain AES-256-GCM encrypted at rest. By default the Redis s
 
 ### Recommended: provider-native Antigravity OAuth
 
-This is the default flow and **does not require creating your own Google Cloud OAuth application**.
+This is the default flow and **does not require creating your own Google Cloud OAuth application**. The project includes the same class of public native-app OAuth credentials used by community Antigravity integrations; explicit `ANTIGRAVITY_*` env values are optional overrides.
 
 1. Dashboard → **Add account** → **Antigravity OAuth**.
 2. Click **Continue with Antigravity**.
@@ -84,15 +84,20 @@ UPSTASH_REDIS_REST_URL=...
 UPSTASH_REDIS_REST_TOKEN=...
 ```
 
-Then configure the dashboard and provider-native Antigravity OAuth credentials:
+For the dashboard, the only required app-level secret is:
 
 ```env
 ADMIN_PASSWORD=choose-a-strong-password
+```
+
+Provider-native Antigravity OAuth works without custom OAuth environment variables. If you intentionally want to override the embedded public native-app client, set **both** values:
+
+```env
 ANTIGRAVITY_CLIENT_ID=...
 ANTIGRAVITY_CLIENT_SECRET=...
 ```
 
-The aliases `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET` are also accepted.
+The aliases `ANTIGRAVITY_OAUTH_CLIENT_ID` and `ANTIGRAVITY_OAUTH_CLIENT_SECRET` are also accepted. Do not set only one half of the pair.
 
 Optional:
 
@@ -108,7 +113,7 @@ GOOGLE_OAUTH_CLIENT_SECRET=optional-web-oauth-secret
 # GOOGLE_OAUTH_REDIRECT_URI=https://YOUR-PRODUCTION-DOMAIN/api/accounts/oauth/callback
 ```
 
-`ADMIN_PASSWORD` protects the dashboard with a Secure/HttpOnly/SameSite cookie. Keep every credential in Vercel Environment Variables and never commit credentials to GitHub.
+`ADMIN_PASSWORD` protects the dashboard with a Secure/HttpOnly/SameSite cookie. Keep user credentials and private secrets in Vercel Environment Variables; the embedded native OAuth client is public client metadata, not a per-user credential.
 
 If `MCP_SHARED_SECRET` is not set, `/api/mcp` is not bearer-protected. This can be useful while testing ChatGPT MCP connectivity, but the endpoint should be treated as public. Only enable the secret if the MCP client configuration you use can send the bearer token.
 
