@@ -13,6 +13,8 @@ export const ANTIGRAVITY_NATIVE_SCOPES = [
   "https://www.googleapis.com/auth/experimentsandconfigs"
 ];
 const ENDPOINTS = ["https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com"];
+const WEB_OAUTH_APP_URL_KEYS = ["GOOGLE_OAUTH_APP_URL", "OAUTH_APP_URL", "APP_URL", "NEXT_PUBLIC_APP_URL", "VERCEL_PROJECT_PRODUCTION_URL"];
+const WEB_OAUTH_REDIRECT_URI_KEYS = ["GOOGLE_OAUTH_REDIRECT_URI", "OAUTH_REDIRECT_URI"];
 
 function firstNonEmpty(env, names) {
   for (const name of names) {
@@ -60,14 +62,59 @@ export function resolveOAuthCredentials(env = process.env) {
 }
 
 export function resolveWebOAuthCredentials(env = process.env) {
-  const clientId = (env.GOOGLE_OAUTH_CLIENT_ID || env.GOOGLE_WEB_CLIENT_ID || "").trim();
-  const clientSecret = (env.GOOGLE_OAUTH_CLIENT_SECRET || env.GOOGLE_WEB_CLIENT_SECRET || "").trim();
+  const clientId = firstNonEmpty(env, ["GOOGLE_OAUTH_CLIENT_ID", "GOOGLE_WEB_CLIENT_ID", "GOOGLE_CLIENT_ID"]);
+  const clientSecret = firstNonEmpty(env, ["GOOGLE_OAUTH_CLIENT_SECRET", "GOOGLE_WEB_CLIENT_SECRET", "GOOGLE_CLIENT_SECRET"]);
   return { clientId, clientSecret };
 }
 
-export function webOAuthRedirectUri(origin) {
-  const url = new URL(String(origin));
-  return `${url.origin}/api/accounts/oauth/callback`;
+function normalizeHttpOrigin(value) {
+  let candidate = String(value ?? "").trim();
+  if (!candidate) return "";
+  if (!/^[a-z][a-z\d+.-]*:\/\//i.test(candidate)) candidate = `https://${candidate}`;
+  const url = new URL(candidate);
+  if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("OAuth app URL must use HTTP or HTTPS");
+  return url.origin;
+}
+
+export function resolveWebOAuthOrigin(requestOrigin, env = process.env) {
+  for (const key of WEB_OAUTH_APP_URL_KEYS) {
+    const value = String(env?.[key] ?? "").trim();
+    if (!value) continue;
+    try {
+      return normalizeHttpOrigin(value);
+    } catch {
+      throw new Error(`${key} must be a valid HTTP or HTTPS origin`);
+    }
+  }
+  return normalizeHttpOrigin(requestOrigin);
+}
+
+export function webOAuthRedirectUri(origin, env = process.env) {
+  const configured = firstNonEmpty(env, WEB_OAUTH_REDIRECT_URI_KEYS);
+  if (configured) {
+    let url;
+    try {
+      url = new URL(configured);
+    } catch {
+      throw new Error("OAuth redirect URI must be a valid absolute URL");
+    }
+    if (url.protocol !== "http:" && url.protocol !== "https:") {
+      throw new Error("OAuth redirect URI must use HTTP or HTTPS");
+    }
+    if (
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      url.pathname !== "/api/accounts/oauth/callback"
+    ) {
+      throw new Error("OAuth redirect URI must use the /api/accounts/oauth/callback pathname");
+    }
+    if (url.search || url.hash) {
+      throw new Error("OAuth redirect URI must not contain query parameters or a fragment");
+    }
+    return url.toString();
+  }
+  return `${resolveWebOAuthOrigin(origin, env)}/api/accounts/oauth/callback`;
 }
 
 export function isWebOAuthConfigured(env = process.env) {
@@ -76,7 +123,13 @@ export function isWebOAuthConfigured(env = process.env) {
 }
 
 export function resolveOAuthMode({ mode, origin } = {}, env = process.env) {
-  if (mode === "web" && origin && isWebOAuthConfigured(env)) return "web";
+  if (mode === "web") {
+    if (!origin) throw new Error("Web OAuth requires the dashboard origin");
+    if (!isWebOAuthConfigured(env)) {
+      throw new Error("Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in Vercel for one-click Google OAuth");
+    }
+    return "web";
+  }
   return "antigravity";
 }
 
@@ -113,13 +166,20 @@ export function parseOAuthCallback(raw, expectedState) {
   if (!input) throw new Error("OAuth callback URL is empty");
   let url;
   try {
-    url = new URL(input);
+    const normalized = /^(?:localhost|127\.0\.0\.1)(?::\d+)?(?:\/|$)/i.test(input)
+      ? `http://${input}`
+      : input;
+    url = new URL(normalized);
   } catch {
     const query = input.startsWith("?") ? input.slice(1) : input;
     url = new URL(`${ANTIGRAVITY_NATIVE_REDIRECT_URI}?${query}`);
   }
   const providerError = url.searchParams.get("error");
-  if (providerError) throw new Error(`OAuth provider error: ${providerError.slice(0, 120)}`);
+  if (providerError) {
+    const description = url.searchParams.get("error_description");
+    const detail = description ? ` — ${description}` : "";
+    throw new Error(`OAuth provider error: ${(providerError + detail).slice(0, 240)}`);
+  }
   const state = url.searchParams.get("state");
   const code = url.searchParams.get("code");
   if (!state || !code) throw new Error("OAuth callback is missing state or code");
@@ -128,16 +188,17 @@ export function parseOAuthCallback(raw, expectedState) {
 }
 
 export async function startOAuthFlow({ origin, mode } = {}) {
-  const clientKind = resolveOAuthMode({ mode, origin });
+  const clientKind = resolveOAuthMode({ mode, origin }, process.env);
   const { clientId } = oauthClient(clientKind);
-  const redirectUri = clientKind === "web" ? webOAuthRedirectUri(origin) : ANTIGRAVITY_NATIVE_REDIRECT_URI;
+  const returnOrigin = normalizeHttpOrigin(origin);
+  const redirectUri = clientKind === "web" ? webOAuthRedirectUri(origin, process.env) : ANTIGRAVITY_NATIVE_REDIRECT_URI;
   const verifier = crypto.randomBytes(32).toString("base64url");
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
   const state = crypto.randomBytes(32).toString("base64url");
 
   await setJson(
     `gemini-critic:oauth:${state}`,
-    { verifier, createdAt: Date.now(), redirectUri, clientKind },
+    { verifier, createdAt: Date.now(), redirectUri, returnOrigin, clientKind },
     FLOW_TTL_SECONDS
   );
 
@@ -158,6 +219,7 @@ export async function startOAuthFlow({ origin, mode } = {}) {
     mode: clientKind === "web" ? "web" : "manual",
     oauthClientType: clientKind,
     redirectUri,
+    returnOrigin,
     authorizationUrl: `${AUTH_URL}?${params.toString()}`
   };
 }
@@ -230,21 +292,27 @@ async function completeOAuthCode(state, code) {
     throw new Error("OAuth flow expired. Start Add account again.");
   }
   await deleteKey(key);
+  const returnOrigin = flow.returnOrigin || "";
+  try {
+    const tokens = await exchangeCode(code, flow.verifier, flow.clientKind, flow.redirectUri);
+    const [email, projectId] = await Promise.all([
+      fetchEmail(tokens.access_token),
+      discoverProjectIdForToken(tokens.access_token)
+    ]);
 
-  const tokens = await exchangeCode(code, flow.verifier, flow.clientKind, flow.redirectUri);
-  const [email, projectId] = await Promise.all([
-    fetchEmail(tokens.access_token),
-    discoverProjectIdForToken(tokens.access_token)
-  ]);
-
-  return {
-    email,
-    projectId,
-    refreshToken: tokens.refresh_token,
-    accessToken: tokens.access_token,
-    expiresIn: Number(tokens.expires_in ?? 3600),
-    oauthClientType: flow.clientKind
-  };
+    return {
+      email,
+      projectId,
+      refreshToken: tokens.refresh_token,
+      accessToken: tokens.access_token,
+      expiresIn: Number(tokens.expires_in ?? 3600),
+      oauthClientType: flow.clientKind,
+      returnOrigin
+    };
+  } catch (error) {
+    if (error && typeof error === "object") error.oauthReturnOrigin = returnOrigin;
+    throw error;
+  }
 }
 
 export async function finishOAuthFlow(callbackUrl, expectedState) {
@@ -252,8 +320,24 @@ export async function finishOAuthFlow(callbackUrl, expectedState) {
   return completeOAuthCode(state, code);
 }
 
-export async function finishOAuthCallback({ state, code, error }) {
-  if (error) throw new Error(`OAuth provider error: ${String(error).slice(0, 120)}`);
+export async function finishOAuthCallback({ state, code, error, errorDescription }) {
+  if (error) {
+    let returnOrigin = "";
+    if (state) {
+      const key = `gemini-critic:oauth:${state}`;
+      try {
+        const flow = await getJson(key);
+        returnOrigin = flow?.returnOrigin || "";
+        await deleteKey(key);
+      } catch {
+        // Keep the callback usable even when the flow has already expired.
+      }
+    }
+    const detail = errorDescription ? ` — ${String(errorDescription)}` : "";
+    const callbackError = new Error(`OAuth provider error: ${(String(error) + detail).slice(0, 240)}`);
+    callbackError.oauthReturnOrigin = returnOrigin;
+    throw callbackError;
+  }
   if (!state || !code) throw new Error("OAuth callback is missing state or code");
   return completeOAuthCode(state, code);
 }

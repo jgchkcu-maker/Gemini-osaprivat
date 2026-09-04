@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -104,11 +104,24 @@ function AddAccountModal({ status, onClose, onAdded }) {
   const [email, setEmail] = useState("");
   const [projectId, setProjectId] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
+  const [copied, setCopied] = useState(false);
+  const flowRef = useRef(null);
+  const popupRef = useRef(null);
 
   useEffect(() => {
     async function onMessage(event) {
-      if (event.origin !== window.location.origin) return;
       if (event.data?.type !== "gemini-critic-oauth") return;
+      const activeFlow = flowRef.current;
+      let callbackOrigin = window.location.origin;
+      try {
+        callbackOrigin = new URL(activeFlow?.redirectUri || window.location.origin).origin;
+      } catch {
+        return;
+      }
+      if (event.origin !== callbackOrigin) return;
+      if (popupRef.current && event.source !== popupRef.current) return;
+      flowRef.current = null;
+      popupRef.current = null;
       setBusy(false);
       if (!event.data.ok) {
         setError(event.data.message || "Google OAuth failed");
@@ -135,13 +148,21 @@ function AddAccountModal({ status, onClose, onAdded }) {
         method: "POST",
         body: JSON.stringify({ mode: oauthMode })
       });
+      flowRef.current = next;
       setFlow(next);
       const popup = window.open(
         next.authorizationUrl,
         "gemini-critic-google-oauth",
         "popup=yes,width=540,height=760,resizable=yes,scrollbars=yes"
       );
-      if (!popup) throw new Error("Browser blocked the Google sign-in window. Allow pop-ups for this site and try again.");
+      if (!popup) {
+        if (oauthMode === "web") {
+          window.location.assign(next.authorizationUrl);
+          return;
+        }
+        throw new Error("Browser blocked the Google sign-in window. Allow pop-ups for this site and try again.");
+      }
+      popupRef.current = popup;
       popup.focus?.();
       if (next.mode !== "web") setBusy(false);
     } catch (err) {
@@ -185,7 +206,19 @@ function AddAccountModal({ status, onClose, onAdded }) {
     }
   }
 
+  async function copyRedirectUri() {
+    if (!status.oauthRedirectUri) return;
+    try {
+      await navigator.clipboard?.writeText(status.oauthRedirectUri);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setError("Could not copy the callback URL. Select it manually.");
+    }
+  }
+
   const nativeFlowActive = flow?.mode === "manual";
+  const webFlowActive = flow?.mode === "web";
 
   return (
     <div className="modalBackdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
@@ -199,16 +232,62 @@ function AddAccountModal({ status, onClose, onAdded }) {
         </div>
 
         <div className="segmented">
-          <button className={mode === "oauth" ? "active" : ""} onClick={() => setMode("oauth")}>Antigravity OAuth</button>
-          <button className={mode === "import" ? "active" : ""} onClick={() => setMode("import")}>Import credential</button>
+          <button className={mode === "oauth" ? "active" : ""} onClick={() => setMode("oauth")} type="button">{status.webOauthConfigured ? "Google OAuth" : "Antigravity OAuth"}</button>
+          <button className={mode === "import" ? "active" : ""} onClick={() => setMode("import")} type="button">Import credential</button>
         </div>
 
         {mode === "oauth" ? (
           <div className="modalBody">
-            {status.nativeOauthConfigured ? (
+            {status.webOauthConfigured ? (
               <>
                 <div className="setupNotice compact">
-                  <strong>Recommended · provider-native OAuth</strong>
+                  <strong>Recommended · one-click Google OAuth</strong>
+                  <span>Choose the Google account and allow access. The account will be encrypted and added automatically, including when this dashboard is opened from a Vercel preview URL.</span>
+                  <div className="redirectBox">
+                    <span>Authorized redirect URI</span>
+                    <code>{status.oauthRedirectUri}</code>
+                    <button type="button" onClick={copyRedirectUri}>{copied ? "Copied" : "Copy"}</button>
+                  </div>
+                </div>
+
+                {!webFlowActive ? (
+                  <button className="primaryButton" onClick={() => startOAuth("web")} disabled={busy}>
+                    {busy ? "Opening Google…" : "Continue with Google"}
+                  </button>
+                ) : (
+                  <div className="stepRow"><span>2</span><div><b>Finish Google sign-in</b><p>This window will update automatically after Google returns. On mobile, you may return to the dashboard manually after approval.</p></div></div>
+                )}
+
+                {status.nativeOauthConfigured ? (
+                  <details className="oauthFallback" open={nativeFlowActive}>
+                    <summary>Use manual Antigravity OAuth instead</summary>
+                    <div className="oauthFallbackBody">
+                      {!nativeFlowActive ? (
+                        <button className="secondaryButton" onClick={() => startOAuth("native")} disabled={busy}>
+                          Open provider-native sign-in
+                        </button>
+                      ) : (
+                        <>
+                          <div className="stepRow"><span>1</span><div><b>Finish Google sign-in</b><p>Choose the Google account and allow access.</p></div></div>
+                          <div className="stepRow"><span>2</span><div><b>Copy the localhost callback URL</b><p>The localhost page may not load — copy the full URL from the browser address bar.</p></div></div>
+                          <label>
+                            <span>Callback URL</span>
+                            <textarea value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:51121/oauth-callback?state=…&code=…" />
+                          </label>
+                          <button className="primaryButton" onClick={finishOAuth} disabled={busy || !callbackUrl}>
+                            {busy ? "Adding…" : "Add to pool"}
+                          </button>
+                          <button className="secondaryButton" onClick={() => startOAuth("native")} disabled={busy}>Restart sign-in</button>
+                        </>
+                      )}
+                    </div>
+                  </details>
+                ) : null}
+              </>
+            ) : status.nativeOauthConfigured ? (
+              <>
+                <div className="setupNotice compact">
+                  <strong>Provider-native Antigravity OAuth</strong>
                   <span>Uses the same Antigravity Google OAuth pattern as 9router/OmniRoute. No custom Google Cloud OAuth app is required.</span>
                 </div>
 
@@ -230,30 +309,11 @@ function AddAccountModal({ status, onClose, onAdded }) {
                     <button className="secondaryButton" onClick={() => startOAuth("native")} disabled={busy}>Restart sign-in</button>
                   </>
                 )}
-
-                {status.webOauthConfigured ? (
-                  <>
-                    <div className="stepRow"><span>↗</span><div><b>Optional seamless mode</b><p>Your custom Google Web OAuth client is configured, so you can also add an account without copying the localhost URL.</p></div></div>
-                    <button className="secondaryButton" onClick={() => startOAuth("web")} disabled={busy}>
-                      {busy && flow?.mode === "web" ? "Waiting for Google…" : "Use one-click Google OAuth"}
-                    </button>
-                  </>
-                ) : null}
-              </>
-            ) : status.webOauthConfigured ? (
-              <>
-                <div className="setupNotice compact">
-                  <strong>One-click Web OAuth available</strong>
-                  <span>Provider-native Antigravity credentials are missing, but your custom Google Web OAuth client can still add accounts automatically.</span>
-                </div>
-                <button className="primaryButton" onClick={() => startOAuth("web")} disabled={busy}>
-                  {busy ? "Waiting for Google…" : "Continue with Google"}
-                </button>
               </>
             ) : (
               <div className="setupNotice compact">
                 <strong>OAuth credentials are missing</strong>
-                <span>Configure <code>ANTIGRAVITY_CLIENT_ID</code> and <code>ANTIGRAVITY_CLIENT_SECRET</code>, or use “Import credential”.</span>
+                <span>Configure <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code> for one-click login, or configure <code>ANTIGRAVITY_CLIENT_ID</code> and <code>ANTIGRAVITY_CLIENT_SECRET</code> for the manual fallback.</span>
               </div>
             )}
           </div>
@@ -298,6 +358,14 @@ export default function DashboardClient() {
   }, []);
 
   useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (!url.searchParams.has("oauth_error")) return;
+    setError("Google OAuth was not completed. Please try again.");
+    url.searchParams.delete("oauth_error");
+    window.history.replaceState({}, "", `${url.pathname}${url.search}${url.hash}`);
+  }, []);
 
   const available = useMemo(
     () => accounts.filter((account) => account.enabled && account.status !== "needs_login" && account.cooldownUntil <= Date.now()).length,

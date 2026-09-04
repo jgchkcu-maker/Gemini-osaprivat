@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { buildCompareDeleteCommand, resolveRedisCredentials } from "../src/accounts/redis.js";
 import { encryptSecret, decryptSecret } from "../src/accounts/crypto.js";
 import { accountRecordKey, normalizeAccountRecord } from "../src/accounts/store.js";
+import { adminCookie, clearAdminCookie } from "../src/admin/auth.js";
 import {
   ANTIGRAVITY_NATIVE_REDIRECT_URI,
   ANTIGRAVITY_NATIVE_SCOPES,
@@ -119,6 +120,48 @@ test("direct web OAuth is opt-in and uses dedicated Google web client credential
   );
 });
 
+test("web OAuth accepts common Google client env aliases", () => {
+  assert.deepEqual(
+    resolveWebOAuthCredentials({ GOOGLE_CLIENT_ID: "web-id", GOOGLE_CLIENT_SECRET: "web-secret" }),
+    { clientId: "web-id", clientSecret: "web-secret" }
+  );
+});
+
+test("explicit web OAuth never silently falls back to the manual native flow", () => {
+  assert.throws(
+    () => resolveOAuthMode({ mode: "web", origin: "https://gemini-osaprivat.vercel.app" }, {}),
+    /GOOGLE_OAUTH_CLIENT_ID.*GOOGLE_OAUTH_CLIENT_SECRET/i
+  );
+});
+
+test("web OAuth can use a stable app origin when the dashboard is opened from a preview URL", () => {
+  const env = {
+    GOOGLE_OAUTH_CLIENT_ID: "web-id",
+    GOOGLE_OAUTH_CLIENT_SECRET: "web-secret",
+    GOOGLE_OAUTH_APP_URL: "https://gemini-osaprivat.vercel.app"
+  };
+  assert.equal(
+    webOAuthRedirectUri("https://gemini-osaprivat-git-main-jgchkcu-maker.vercel.app", env),
+    "https://gemini-osaprivat.vercel.app/api/accounts/oauth/callback"
+  );
+});
+
+test("configured web OAuth redirect URI must point to this callback route", () => {
+  const env = {
+    GOOGLE_OAUTH_REDIRECT_URI: "https://gemini-osaprivat.vercel.app/wrong-callback"
+  };
+  assert.throws(
+    () => webOAuthRedirectUri("https://gemini-osaprivat.vercel.app", env),
+    /callback pathname/i
+  );
+  assert.throws(
+    () => webOAuthRedirectUri("https://gemini-osaprivat.vercel.app", {
+      GOOGLE_OAUTH_REDIRECT_URI: "https://gemini-osaprivat.vercel.app/api/accounts/oauth/callback?source=preview"
+    }),
+    /query parameters/i
+  );
+});
+
 test("account refresh tokens are encrypted and can be recovered", () => {
   const encrypted = encryptSecret("refresh-token", "a sufficiently long encryption seed");
   assert.notEqual(encrypted, "refresh-token");
@@ -135,4 +178,28 @@ test("OAuth callback validates state", () => {
     () => parseOAuthCallback("http://localhost:51121/oauth-callback?state=wrong&code=abc123", "expected"),
     /state mismatch/i
   );
+  assert.throws(
+    () => parseOAuthCallback("http://localhost:51121/oauth-callback?error=access_denied&error_description=User%20cancelled", "expected"),
+    /access_denied.*User cancelled/i
+  );
+  assert.deepEqual(
+    parseOAuthCallback("localhost:51121/oauth-callback?state=expected&code=abc123", "expected"),
+    { state: "expected", code: "abc123" }
+  );
+});
+
+test("admin cookies are usable on local HTTP and remain secure on HTTPS", () => {
+  const httpRequest = new Request("http://localhost:3000/api/admin/login");
+  const httpsRequest = new Request("https://gemini-osaprivat.vercel.app/api/admin/login");
+  const conflictingProxyRequest = new Request("https://gemini-osaprivat.vercel.app/api/admin/login", {
+    headers: { "x-forwarded-proto": "http" }
+  });
+  const trustedProxyRequest = new Request("http://127.0.0.1:3000/api/admin/login", {
+    headers: { "x-forwarded-proto": "https" }
+  });
+  assert.doesNotMatch(adminCookie({ ADMIN_PASSWORD: "local-password-123" }, httpRequest), /; Secure/);
+  assert.match(adminCookie({ ADMIN_PASSWORD: "local-password-123" }, httpsRequest), /; Secure/);
+  assert.match(adminCookie({ ADMIN_PASSWORD: "local-password-123" }, conflictingProxyRequest), /; Secure/);
+  assert.match(adminCookie({ ADMIN_PASSWORD: "local-password-123" }, trustedProxyRequest), /; Secure/);
+  assert.doesNotMatch(clearAdminCookie(httpRequest), /; Secure/);
 });
