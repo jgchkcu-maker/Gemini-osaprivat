@@ -15,11 +15,16 @@ const SCOPES = [
 ];
 const ENDPOINTS = ["https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com"];
 
+export function resolveOAuthCredentials(env = process.env) {
+  const clientId = (env.ANTIGRAVITY_OAUTH_CLIENT_ID || env.ANTIGRAVITY_CLIENT_ID || "").trim();
+  const clientSecret = (env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || env.ANTIGRAVITY_CLIENT_SECRET || "").trim();
+  return { clientId, clientSecret };
+}
+
 function oauthClient(env = process.env) {
-  const clientId = env.ANTIGRAVITY_OAUTH_CLIENT_ID?.trim();
-  const clientSecret = env.ANTIGRAVITY_OAUTH_CLIENT_SECRET?.trim();
+  const { clientId, clientSecret } = resolveOAuthCredentials(env);
   if (!clientId || !clientSecret) {
-    throw new Error("Set ANTIGRAVITY_OAUTH_CLIENT_ID and ANTIGRAVITY_OAUTH_CLIENT_SECRET in Vercel to use browser OAuth");
+    throw new Error("Set ANTIGRAVITY_CLIENT_ID/SECRET (or ANTIGRAVITY_OAUTH_CLIENT_ID/SECRET) in Vercel to use browser OAuth");
   }
   return { clientId, clientSecret };
 }
@@ -36,7 +41,8 @@ function metadataHeaders(accessToken) {
 }
 
 export function isOAuthConfigured(env = process.env) {
-  return Boolean(env.ANTIGRAVITY_OAUTH_CLIENT_ID?.trim() && env.ANTIGRAVITY_OAUTH_CLIENT_SECRET?.trim());
+  const { clientId, clientSecret } = resolveOAuthCredentials(env);
+  return Boolean(clientId && clientSecret);
 }
 
 export function parseOAuthCallback(raw, expectedState) {
