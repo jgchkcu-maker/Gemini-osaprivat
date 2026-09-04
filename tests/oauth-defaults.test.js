@@ -24,6 +24,13 @@ test("explicit Antigravity env credentials override embedded public defaults", (
   );
 });
 
+test("partial Antigravity env override never mixes with embedded defaults", () => {
+  assert.deepEqual(
+    resolveOAuthCredentials({ ANTIGRAVITY_CLIENT_ID: "override-id" }),
+    { clientId: "override-id", clientSecret: "" }
+  );
+});
+
 test("embedded native defaults do not make custom Web OAuth configured", () => {
   assert.deepEqual(resolveWebOAuthCredentials({}), { clientId: "", clientSecret: "" });
 });
