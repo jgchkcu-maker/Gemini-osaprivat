@@ -15,7 +15,8 @@ export async function POST(request) {
     const account = await addAccount({
       email: credentials.email,
       projectId: credentials.projectId,
-      refreshToken: credentials.refreshToken
+      refreshToken: credentials.refreshToken,
+      oauthClientType: credentials.oauthClientType
     });
     return Response.json({ account });
   } catch (error) {
