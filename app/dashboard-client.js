@@ -96,7 +96,7 @@ function Login({ status, onLogin }) {
 }
 
 function AddAccountModal({ status, onClose, onAdded }) {
-  const [mode, setMode] = useState(status.webOauthConfigured || status.oauthConfigured ? "oauth" : "import");
+  const [mode, setMode] = useState(status.oauthConfigured ? "oauth" : "import");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [flow, setFlow] = useState(null);
@@ -125,11 +125,16 @@ function AddAccountModal({ status, onClose, onAdded }) {
     return () => window.removeEventListener("message", onMessage);
   }, [onAdded, onClose]);
 
-  async function startOAuth() {
+  async function startOAuth(oauthMode = "native") {
     setBusy(true);
     setError("");
+    setFlow(null);
+    setCallbackUrl("");
     try {
-      const next = await api("/api/accounts/oauth/start", { method: "POST", body: "{}" });
+      const next = await api("/api/accounts/oauth/start", {
+        method: "POST",
+        body: JSON.stringify({ mode: oauthMode })
+      });
       setFlow(next);
       const popup = window.open(
         next.authorizationUrl,
@@ -137,8 +142,8 @@ function AddAccountModal({ status, onClose, onAdded }) {
         "popup=yes,width=540,height=760,resizable=yes,scrollbars=yes"
       );
       if (!popup) throw new Error("Browser blocked the Google sign-in window. Allow pop-ups for this site and try again.");
-      if (next.mode === "web") popup.focus?.();
-      else setBusy(false);
+      popup.focus?.();
+      if (next.mode !== "web") setBusy(false);
     } catch (err) {
       setBusy(false);
       setError(err.message);
@@ -180,6 +185,8 @@ function AddAccountModal({ status, onClose, onAdded }) {
     }
   }
 
+  const nativeFlowActive = flow?.mode === "manual";
+
   return (
     <div className="modalBackdrop" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
       <section className="modal glass">
@@ -192,53 +199,70 @@ function AddAccountModal({ status, onClose, onAdded }) {
         </div>
 
         <div className="segmented">
-          <button className={mode === "oauth" ? "active" : ""} onClick={() => setMode("oauth")}>Google OAuth</button>
+          <button className={mode === "oauth" ? "active" : ""} onClick={() => setMode("oauth")}>Antigravity OAuth</button>
           <button className={mode === "import" ? "active" : ""} onClick={() => setMode("import")}>Import credential</button>
         </div>
 
         {mode === "oauth" ? (
           <div className="modalBody">
-            {status.webOauthConfigured ? (
+            {status.nativeOauthConfigured ? (
               <>
-                <p className="subtle">One-click sign-in. Google opens an account chooser, then the account is encrypted and added to the pool automatically.</p>
-                <button className="primaryButton" onClick={startOAuth} disabled={busy}>
+                <div className="setupNotice compact">
+                  <strong>Recommended · provider-native OAuth</strong>
+                  <span>Uses the same Antigravity Google OAuth pattern as 9router/OmniRoute. No custom Google Cloud OAuth app is required.</span>
+                </div>
+
+                {!nativeFlowActive ? (
+                  <button className="primaryButton" onClick={() => startOAuth("native")} disabled={busy}>
+                    {busy ? "Opening Google…" : "Continue with Antigravity"}
+                  </button>
+                ) : (
+                  <>
+                    <div className="stepRow"><span>1</span><div><b>Finish Google sign-in</b><p>Choose the Google account and allow access.</p></div></div>
+                    <div className="stepRow"><span>2</span><div><b>Copy the localhost callback URL</b><p>Google redirects to localhost. If the page does not load, that is expected — copy the full URL from the address bar.</p></div></div>
+                    <label>
+                      <span>Callback URL</span>
+                      <textarea value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:51121/oauth-callback?state=…&code=…" />
+                    </label>
+                    <button className="primaryButton" onClick={finishOAuth} disabled={busy || !callbackUrl}>
+                      {busy ? "Adding…" : "Add to pool"}
+                    </button>
+                    <button className="secondaryButton" onClick={() => startOAuth("native")} disabled={busy}>Restart sign-in</button>
+                  </>
+                )}
+
+                {status.webOauthConfigured ? (
+                  <>
+                    <div className="stepRow"><span>↗</span><div><b>Optional seamless mode</b><p>Your custom Google Web OAuth client is configured, so you can also add an account without copying the localhost URL.</p></div></div>
+                    <button className="secondaryButton" onClick={() => startOAuth("web")} disabled={busy}>
+                      {busy && flow?.mode === "web" ? "Waiting for Google…" : "Use one-click Google OAuth"}
+                    </button>
+                  </>
+                ) : null}
+              </>
+            ) : status.webOauthConfigured ? (
+              <>
+                <div className="setupNotice compact">
+                  <strong>One-click Web OAuth available</strong>
+                  <span>Provider-native Antigravity credentials are missing, but your custom Google Web OAuth client can still add accounts automatically.</span>
+                </div>
+                <button className="primaryButton" onClick={() => startOAuth("web")} disabled={busy}>
                   {busy ? "Waiting for Google…" : "Continue with Google"}
                 </button>
-                {busy ? <div className="stepRow"><span>✓</span><div><b>Finish Google sign-in</b><p>This window will update automatically after authorization.</p></div></div> : null}
               </>
-            ) : status.oauthConfigured ? (
-              !flow ? (
-                <>
-                  <div className="setupNotice compact">
-                    <strong>Legacy OAuth is available</strong>
-                    <span>For true one-click login create a Google <b>Web application</b> OAuth client and add <code>GOOGLE_OAUTH_CLIENT_ID</code> + <code>GOOGLE_OAUTH_CLIENT_SECRET</code>. You can still use the localhost fallback below.</span>
-                  </div>
-                  <button className="primaryButton" onClick={startOAuth} disabled={busy}>{busy ? "Preparing…" : "Use legacy Google login"}</button>
-                </>
-              ) : (
-                <>
-                  <div className="stepRow"><span>1</span><div><b>Google sign-in opened</b><p>Finish sign-in in the new tab.</p></div></div>
-                  <div className="stepRow"><span>2</span><div><b>Copy the final localhost URL</b><p>The localhost page may fail to load. Copy the full address from the browser bar.</p></div></div>
-                  <label>
-                    <span>Callback URL</span>
-                    <textarea value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:51121/oauth-callback?state=…&code=…" />
-                  </label>
-                  <button className="primaryButton" onClick={finishOAuth} disabled={busy || !callbackUrl}>{busy ? "Adding…" : "Add to pool"}</button>
-                </>
-              )
             ) : (
               <div className="setupNotice compact">
-                <strong>Set up Google Web OAuth once</strong>
-                <span>Create a Google OAuth client of type <b>Web application</b>, authorize <code>{typeof window !== "undefined" ? `${window.location.origin}/api/accounts/oauth/callback` : "/api/accounts/oauth/callback"}</code>, then add its ID and secret to Vercel as <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code>.</span>
+                <strong>OAuth credentials are missing</strong>
+                <span>Configure <code>ANTIGRAVITY_CLIENT_ID</code> and <code>ANTIGRAVITY_CLIENT_SECRET</code>, or use “Import credential”.</span>
               </div>
             )}
           </div>
         ) : (
           <form className="modalBody" onSubmit={importAccount}>
             <p className="subtle">Paste an existing Antigravity refresh credential. Composite form <code>refresh|project|managedProject</code> is supported.</p>
-            <label><span>Account label / email</span><input value={email} onChange={(e) => setEmail(e.target.value)} placeholder="account@gmail.com" /></label>
-            <label><span>Refresh credential</span><textarea className="secretArea" value={refreshToken} onChange={(e) => setRefreshToken(e.target.value)} placeholder="refresh token or refresh|project|managed" /></label>
-            <label><span>Project ID <em>optional</em></span><input value={projectId} onChange={(e) => setProjectId(e.target.value)} placeholder="Auto-discover when empty" /></label>
+            <label><span>Account label / email</span><input value={email} onChange={(event) => setEmail(event.target.value)} placeholder="account@gmail.com" /></label>
+            <label><span>Refresh credential</span><textarea className="secretArea" value={refreshToken} onChange={(event) => setRefreshToken(event.target.value)} placeholder="refresh token or refresh|project|managed" /></label>
+            <label><span>Project ID <em>optional</em></span><input value={projectId} onChange={(event) => setProjectId(event.target.value)} placeholder="Auto-discover when empty" /></label>
             <button className="primaryButton" disabled={busy || !refreshToken}>{busy ? "Encrypting & saving…" : "Import account"}</button>
           </form>
         )}
@@ -284,7 +308,9 @@ export default function DashboardClient() {
     try {
       await api("/api/accounts", { method: "PATCH", body: JSON.stringify({ id: account.id, enabled: !account.enabled }) });
       await load();
-    } catch (err) { setError(err.message); }
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function deleteAccount(account) {
@@ -292,7 +318,9 @@ export default function DashboardClient() {
     try {
       await api("/api/accounts", { method: "DELETE", body: JSON.stringify({ id: account.id }) });
       await load();
-    } catch (err) { setError(err.message); }
+    } catch (err) {
+      setError(err.message);
+    }
   }
 
   async function logout() {
@@ -311,25 +339,31 @@ export default function DashboardClient() {
       </header>
 
       <section className="hero">
-        <div><div className="eyebrow">REMOTE MCP</div><h1>Account pool</h1><p>One critic. Multiple Antigravity accounts. Automatic rotation when a quota is hit.</p></div>
+        <div><div className="eyebrow">REMOTE MCP</div><h1>Account pool</h1><p>Sticky rotation, per-model cooldowns and automatic failover for your authorized Antigravity accounts.</p></div>
         <button className="primaryButton addButton" onClick={() => setShowAdd(true)}><IconPlus /> Add account</button>
       </section>
 
       {error ? <div className="errorBanner pageError">{error}</div> : null}
       {status.storageError ? <div className="errorBanner pageError">Storage: {status.storageError}</div> : null}
+      {!status.mcpProtected ? (
+        <div className="setupNotice pageError">
+          <strong>MCP endpoint is not bearer-protected</strong>
+          <span>This is okay for initial ChatGPT connection testing, but anyone who knows the endpoint may be able to call the critic. Add <code>MCP_SHARED_SECRET</code> only if your ChatGPT MCP setup can send that bearer token.</span>
+        </div>
+      ) : null}
 
       <section className="metricsGrid">
         <article className="metric glass"><span>Service</span><strong><i className="liveDot" /> Online</strong><small>/api/mcp</small></article>
-        <article className="metric glass"><span>Accounts</span><strong>{accounts.length}</strong><small>{accounts.filter((a) => a.enabled).length} enabled</small></article>
-        <article className="metric glass"><span>Available now</span><strong>{available}</strong><small>ready for requests</small></article>
-        <article className="metric glass"><span>Storage</span><strong>{status.redisConfigured ? "Upstash" : "Missing"}</strong><small>{status.redisConfigured ? "persistent pool" : "connect Redis"}</small></article>
+        <article className="metric glass"><span>Accounts</span><strong>{accounts.length}</strong><small>{accounts.filter((account) => account.enabled).length} enabled</small></article>
+        <article className="metric glass"><span>Available now</span><strong>{available}</strong><small>ready for High</small></article>
+        <article className="metric glass"><span>Storage</span><strong>{status.redisConfigured ? "Upstash" : "Missing"}</strong><small>{status.redisConfigured ? "atomic v2 pool" : "connect Redis"}</small></article>
       </section>
 
       <section className="contentGrid">
         <div className="poolPanel glass">
-          <div className="sectionHeader"><div><div className="eyebrow">ROTATION</div><h2>Accounts</h2></div><span className="countBadge">{accounts.length}</span></div>
+          <div className="sectionHeader"><div><div className="eyebrow">STICKY ROTATION</div><h2>Accounts</h2></div><span className="countBadge">{accounts.length}</span></div>
           {accounts.length === 0 ? (
-            <div className="emptyState"><div className="emptyPlus">+</div><h3>No accounts yet</h3><p>Add the first Antigravity account. Its refresh token will be encrypted before it reaches Redis.</p><button className="secondaryButton" onClick={() => setShowAdd(true)}>Add first account</button></div>
+            <div className="emptyState"><div className="emptyPlus">+</div><h3>No accounts yet</h3><p>Add the first Antigravity account. Its refresh token is encrypted before it is stored in Redis.</p><button className="secondaryButton" onClick={() => setShowAdd(true)}>Add first account</button></div>
           ) : (
             <div className="accountList">
               {accounts.map((account) => (
