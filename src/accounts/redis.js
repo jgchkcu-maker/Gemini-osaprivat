@@ -14,6 +14,8 @@ const TOKEN_KEYS = [
   "STORAGE_TOKEN"
 ];
 
+const COMPARE_DELETE_LUA = "if redis.call('get', KEYS[1]) == ARGV[1] then return redis.call('del', KEYS[1]) else return 0 end";
+
 function firstPresent(env, keys) {
   for (const key of keys) {
     const value = env?.[key];
@@ -66,6 +68,19 @@ export async function getJson(key) {
   }
 }
 
+export async function getManyJson(keys) {
+  if (!Array.isArray(keys) || keys.length === 0) return [];
+  const values = await redisCommand(["MGET", ...keys]);
+  return (Array.isArray(values) ? values : []).map((value, index) => {
+    if (value == null || value === "") return null;
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw new Error(`Invalid JSON stored at Redis key ${keys[index]}`);
+    }
+  });
+}
+
 export async function setJson(key, value, ttlSeconds) {
   const command = ["SET", key, JSON.stringify(value)];
   if (ttlSeconds) command.push("EX", Math.max(1, Math.floor(ttlSeconds)));
@@ -79,4 +94,37 @@ export async function deleteKey(key) {
 
 export async function increment(key) {
   return Number(await redisCommand(["INCR", key]));
+}
+
+export async function setMembers(key) {
+  const result = await redisCommand(["SMEMBERS", key]);
+  return Array.isArray(result) ? result.map(String) : [];
+}
+
+export async function addSetMember(key, member) {
+  return Number(await redisCommand(["SADD", key, String(member)]));
+}
+
+export async function removeSetMember(key, member) {
+  return Number(await redisCommand(["SREM", key, String(member)]));
+}
+
+export async function setIfAbsent(key, value, ttlMs) {
+  const result = await redisCommand([
+    "SET",
+    key,
+    String(value),
+    "NX",
+    "PX",
+    Math.max(1, Math.floor(Number(ttlMs) || 1))
+  ]);
+  return result === "OK";
+}
+
+export function buildCompareDeleteCommand(key, value) {
+  return ["EVAL", COMPARE_DELETE_LUA, 1, String(key), String(value)];
+}
+
+export async function compareDelete(key, value) {
+  return Number(await redisCommand(buildCompareDeleteCommand(key, value))) > 0;
 }
