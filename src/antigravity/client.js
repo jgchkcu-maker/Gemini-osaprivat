@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import { isRedisConfigured } from "../accounts/redis.js";
+import { resolveOAuthCredentials, resolveWebOAuthCredentials } from "../accounts/oauth.js";
 import {
   getAccountForRequest,
   getPoolStatus,
@@ -53,20 +54,23 @@ function statusError(message, status) {
   return error;
 }
 
-function oauthClient() {
-  const clientId = (process.env.ANTIGRAVITY_OAUTH_CLIENT_ID || process.env.ANTIGRAVITY_CLIENT_ID || "").trim();
-  const clientSecret = (process.env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || process.env.ANTIGRAVITY_CLIENT_SECRET || "").trim();
-  if (!clientId || !clientSecret) {
-    throw new Error("ANTIGRAVITY_CLIENT_ID/SECRET (or ANTIGRAVITY_OAUTH_CLIENT_ID/SECRET) are required to refresh Antigravity accounts");
+function oauthClient(clientKind = "antigravity") {
+  const credentials = clientKind === "web" ? resolveWebOAuthCredentials() : resolveOAuthCredentials();
+  if (!credentials.clientId || !credentials.clientSecret) {
+    if (clientKind === "web") {
+      throw new Error("GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET are required to refresh this Google web OAuth account");
+    }
+    throw new Error("ANTIGRAVITY_CLIENT_ID/SECRET are required to refresh this Antigravity account");
   }
-  return { clientId, clientSecret };
+  return credentials;
 }
 
-async function refreshAccessToken(refreshToken, cacheKey = "legacy") {
-  const cached = tokenCache.get(cacheKey);
+async function refreshAccessToken(refreshToken, cacheKey = "legacy", clientKind = "antigravity") {
+  const effectiveCacheKey = `${clientKind}:${cacheKey}`;
+  const cached = tokenCache.get(effectiveCacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.token;
 
-  const { clientId, clientSecret } = oauthClient();
+  const { clientId, clientSecret } = oauthClient(clientKind);
   const response = await fetch(TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -89,7 +93,7 @@ async function refreshAccessToken(refreshToken, cacheKey = "legacy") {
   if (!body.access_token) throw new Error("Antigravity token refresh returned no access_token");
 
   const ttl = Math.max(30_000, Math.min(((body.expires_in ?? 3600) - 60) * 1000, TOKEN_CACHE_MS));
-  tokenCache.set(cacheKey, { token: body.access_token, expiresAt: Date.now() + ttl });
+  tokenCache.set(effectiveCacheKey, { token: body.access_token, expiresAt: Date.now() + ttl });
   return body.access_token;
 }
 
@@ -233,6 +237,7 @@ async function legacyCredential() {
     return {
       id: "legacy-access",
       accessToken: direct,
+      oauthClientType: "antigravity",
       projectId: process.env.ANTIGRAVITY_PROJECT_ID?.trim() || composite.managedProjectId || composite.projectId || ""
     };
   }
@@ -240,13 +245,15 @@ async function legacyCredential() {
   return {
     id: "legacy-refresh",
     refreshToken: composite.refreshToken,
+    oauthClientType: "antigravity",
     projectId: process.env.ANTIGRAVITY_PROJECT_ID?.trim() || composite.managedProjectId || composite.projectId || ""
   };
 }
 
 async function resolveCredential(account) {
   if (account?.refreshToken) {
-    const accessToken = await refreshAccessToken(account.refreshToken, account.id);
+    const clientKind = account.oauthClientType === "web" ? "web" : "antigravity";
+    const accessToken = await refreshAccessToken(account.refreshToken, account.id, clientKind);
     const projectId = await discoverProjectId(accessToken, account.projectId || "", account.id);
     return { accessToken, projectId };
   }
@@ -291,12 +298,12 @@ export async function generateCriticText({ systemPrompt, userPrompt }) {
 }
 
 export async function getConfigurationStatus() {
-  let poolStatus = { total: 0, enabled: 0, ready: 0, needsLogin: 0, cooldown: 0 };
+  let poolStatus = { total: 0, enabled: 0, available: 0 };
   if (isRedisConfigured()) {
     poolStatus = await getPoolStatus().catch(() => poolStatus);
   }
   return {
-    configured: poolStatus.ready > 0 || Boolean(process.env.ANTIGRAVITY_ACCESS_TOKEN || process.env.ANTIGRAVITY_REFRESH_TOKEN),
+    configured: poolStatus.available > 0 || Boolean(process.env.ANTIGRAVITY_ACCESS_TOKEN || process.env.ANTIGRAVITY_REFRESH_TOKEN),
     model: LOCKED_MODEL,
     modelLocked: true,
     pool: poolStatus,
