@@ -1,13 +1,14 @@
 import { isAdminConfigured, isAdminRequest } from "../../../../src/admin/auth.js";
 import { getPoolStatus } from "../../../../src/accounts/store.js";
 import { isRedisConfigured } from "../../../../src/accounts/redis.js";
-import { isOAuthConfigured, isWebOAuthConfigured } from "../../../../src/accounts/oauth.js";
+import { isOAuthConfigured, isWebOAuthConfigured, webOAuthRedirectUri } from "../../../../src/accounts/oauth.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 export async function GET(request) {
   const authenticated = isAdminRequest(request);
+  const origin = new URL(request.url).origin;
   const base = {
     ok: true,
     authenticated,
@@ -15,6 +16,7 @@ export async function GET(request) {
     redisConfigured: isRedisConfigured(),
     oauthConfigured: isOAuthConfigured(),
     webOauthConfigured: isWebOAuthConfigured(),
+    oauthRedirectUri: webOAuthRedirectUri(origin),
     model: "gemini-3.8-flash-high",
     modelLocked: true
   };
