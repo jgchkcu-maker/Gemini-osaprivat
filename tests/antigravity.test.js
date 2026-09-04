@@ -8,7 +8,8 @@ import {
   parseCompositeRefreshToken,
   parseSseText,
   parseUpstreamRetryHints,
-  UPSTREAM_LOCKED_MODEL
+  UPSTREAM_LOCKED_MODEL,
+  withProjectBindingRetry
 } from "../src/antigravity/client.js";
 
 test("composite refresh tokens are parsed", () => {
@@ -46,6 +47,55 @@ test("request is text-only and sends Gemini 3.8 High in current Antigravity wire
   assert.equal(envelope.request.tools, undefined);
   assert.equal(envelope.request.systemInstruction.parts[0].text, "critic only");
   assert.equal(envelope.request.contents[0].parts[0].text, "challenge this");
+});
+
+test("404 generation failure repairs project binding once and retries with repaired project", async () => {
+  const projects = [];
+  let repairs = 0;
+  const result = await withProjectBindingRetry({
+    projectId: "stale-project",
+    run: async (projectId) => {
+      projects.push(projectId);
+      if (projects.length === 1) {
+        const error = new Error("Requested entity was not found");
+        error.status = 404;
+        throw error;
+      }
+      return "gemini-ok";
+    },
+    repair: async () => {
+      repairs += 1;
+      return { projectId: "repaired-project", onboarded: true };
+    }
+  });
+
+  assert.deepEqual(projects, ["stale-project", "repaired-project"]);
+  assert.equal(repairs, 1);
+  assert.deepEqual(result, {
+    value: "gemini-ok",
+    projectId: "repaired-project",
+    repaired: true
+  });
+});
+
+test("non-404 generation failure does not trigger project repair", async () => {
+  let repairs = 0;
+  await assert.rejects(
+    () => withProjectBindingRetry({
+      projectId: "project",
+      run: async () => {
+        const error = new Error("quota");
+        error.status = 429;
+        throw error;
+      },
+      repair: async () => {
+        repairs += 1;
+        return { projectId: "other" };
+      }
+    }),
+    /quota/
+  );
+  assert.equal(repairs, 0);
 });
 
 test("SSE parser drops thought parts and returns final text", () => {
