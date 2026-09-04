@@ -8,7 +8,8 @@ export async function POST(request) {
   const unauthorized = requireAdmin(request);
   if (unauthorized) return unauthorized;
   try {
-    return Response.json(await startOAuthFlow());
+    const origin = new URL(request.url).origin;
+    return Response.json(await startOAuthFlow({ origin }));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
