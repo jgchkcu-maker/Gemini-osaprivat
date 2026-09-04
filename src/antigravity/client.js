@@ -5,7 +5,8 @@ import {
   getAccountForRequest,
   getPoolStatus,
   recordAccountFailure,
-  recordAccountSuccess
+  recordAccountSuccess,
+  releaseAccountLease
 } from "../accounts/store.js";
 
 const DEFAULT_ENDPOINTS = [
@@ -14,7 +15,11 @@ const DEFAULT_ENDPOINTS = [
 ];
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
 export const LOCKED_MODEL = "gemini-3.8-flash-high";
+export const UPSTREAM_LOCKED_MODEL = "gemini-3.8-flash-high(high)";
 const TOKEN_CACHE_MS = 5 * 60 * 1000;
+const TOTAL_REQUEST_BUDGET_MS = 45_000;
+const MIN_RETRY_BUDGET_MS = 8_000;
+const MAX_UPSTREAM_FETCH_MS = 34_000;
 
 const tokenCache = new Map();
 const projectCache = new Map();
@@ -34,7 +39,7 @@ export function parseCompositeRefreshToken(value = "") {
 }
 
 function clientMetadata() {
-  return JSON.stringify({ ideType: 6, platform: 2, pluginType: 2 });
+  return JSON.stringify({ ideType: 9, platform: 3, pluginType: 2 });
 }
 
 function headers(accessToken, accept = "application/json") {
@@ -44,14 +49,61 @@ function headers(accessToken, accept = "application/json") {
     Accept: accept,
     "User-Agent": "antigravity/1.16.5 linux/x64",
     "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": clientMetadata()
+    "Client-Metadata": clientMetadata(),
+    "x-request-source": "local"
   };
 }
 
-function statusError(message, status) {
+function statusError(message, status, hints = {}) {
   const error = new Error(message);
   error.status = status;
+  if (Number(hints.retryAfterMs) > 0) error.retryAfterMs = Number(hints.retryAfterMs);
+  if (Number(hints.resetsAtMs) > Date.now()) error.resetsAtMs = Number(hints.resetsAtMs);
   return error;
+}
+
+export function parseUpstreamRetryHints(responseHeaders, bodyText = "", now = Date.now()) {
+  const rawRetryAfter = responseHeaders?.get?.("retry-after") ?? responseHeaders?.get?.("Retry-After") ?? null;
+  let retryAfterMs = null;
+  if (rawRetryAfter != null && String(rawRetryAfter).trim()) {
+    const value = String(rawRetryAfter).trim();
+    const seconds = Number(value);
+    if (Number.isFinite(seconds) && seconds >= 0) {
+      retryAfterMs = Math.round(seconds * 1000);
+    } else {
+      const timestamp = Date.parse(value);
+      if (Number.isFinite(timestamp) && timestamp > now) retryAfterMs = timestamp - now;
+    }
+  }
+
+  const body = String(bodyText || "");
+  if (!(retryAfterMs > 0)) {
+    const delay = body.match(/"(?:retryDelay|retry_delay)"\s*:\s*"([\d.]+)s"/i)
+      || body.match(/(?:please\s+)?retry\s+in\s+([\d.]+)\s*s/i);
+    if (delay) retryAfterMs = Math.round(Number(delay[1]) * 1000);
+  }
+
+  let resetsAtMs = null;
+  const reset = body.match(/"(?:resetAt|reset_at|resetTime|reset_time)"\s*:\s*"([^"]+)"/i);
+  if (reset) {
+    const timestamp = Date.parse(reset[1]);
+    if (Number.isFinite(timestamp) && timestamp > now) resetsAtMs = timestamp;
+  }
+
+  return {
+    retryAfterMs: retryAfterMs > 0 ? retryAfterMs : null,
+    resetsAtMs: resetsAtMs > now ? resetsAtMs : null
+  };
+}
+
+export function hasRetryBudget(deadlineAt, now = Date.now(), minimumMs = MIN_RETRY_BUDGET_MS) {
+  return Number(deadlineAt) - Number(now) >= Number(minimumMs);
+}
+
+function timeoutForDeadline(deadlineAt, maxMs = MAX_UPSTREAM_FETCH_MS) {
+  const remaining = Number(deadlineAt) - Date.now() - 1_500;
+  if (remaining < 1_000) throw statusError("Antigravity request deadline reached", 504);
+  return Math.max(1_000, Math.min(maxMs, remaining));
 }
 
 function oauthClient(clientKind = "antigravity") {
@@ -65,7 +117,7 @@ function oauthClient(clientKind = "antigravity") {
   return credentials;
 }
 
-async function refreshAccessToken(refreshToken, cacheKey = "legacy", clientKind = "antigravity") {
+async function refreshAccessToken(refreshToken, cacheKey = "legacy", clientKind = "antigravity", deadlineAt = Date.now() + 20_000) {
   const effectiveCacheKey = `${clientKind}:${cacheKey}`;
   const cached = tokenCache.get(effectiveCacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.token;
@@ -80,7 +132,7 @@ async function refreshAccessToken(refreshToken, cacheKey = "legacy", clientKind 
       refresh_token: refreshToken,
       grant_type: "refresh_token"
     }),
-    signal: AbortSignal.timeout(20_000)
+    signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 12_000))
   });
 
   const body = await response.json().catch(() => ({}));
@@ -97,22 +149,28 @@ async function refreshAccessToken(refreshToken, cacheKey = "legacy", clientKind 
   return body.access_token;
 }
 
-async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey = "legacy") {
+async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey = "legacy", deadlineAt = Date.now() + 20_000) {
   if (explicitProjectId) return explicitProjectId;
   const cached = projectCache.get(cacheKey);
   if (cached && cached.expiresAt > Date.now()) return cached.projectId;
 
   let lastError;
   for (const endpoint of endpointCandidates()) {
+    if (!hasRetryBudget(deadlineAt, Date.now(), 3_000)) break;
     try {
       const response = await fetch(`${endpoint}/v1internal:loadCodeAssist`, {
         method: "POST",
         headers: headers(accessToken),
-        body: JSON.stringify({ metadata: { ideType: 6, platform: 2, pluginType: 2 } }),
-        signal: AbortSignal.timeout(20_000)
+        body: JSON.stringify({ metadata: { ideType: 9, platform: 3, pluginType: 2 } }),
+        signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 12_000))
       });
       if (!response.ok) {
-        lastError = statusError(`Project discovery failed at ${endpoint} (${response.status})`, response.status);
+        const body = await response.text();
+        lastError = statusError(
+          `Project discovery failed at ${endpoint} (${response.status})`,
+          response.status,
+          parseUpstreamRetryHints(response.headers, body)
+        );
         continue;
       }
       const data = await response.json();
@@ -133,7 +191,7 @@ async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey =
 export function buildGenerateEnvelope({ projectId, model = LOCKED_MODEL, systemPrompt, userPrompt }) {
   return {
     project: projectId,
-    model: LOCKED_MODEL,
+    model: UPSTREAM_LOCKED_MODEL,
     request: {
       contents: [{ role: "user", parts: [{ text: userPrompt }] }],
       systemInstruction: { role: "user", parts: [{ text: systemPrompt }] },
@@ -180,17 +238,31 @@ function parseJsonResponse(data) {
   return chunks.join("").trim();
 }
 
-async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt }) {
+function shouldFailover(status) {
+  return [401, 403, 408, 409, 429, 500, 502, 503, 504].includes(Number(status));
+}
+
+async function responseError(prefix, response) {
+  const body = await response.text();
+  return statusError(
+    `${prefix} (${response.status}): ${body.slice(0, 2000)}`,
+    response.status,
+    parseUpstreamRetryHints(response.headers, body)
+  );
+}
+
+async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt, deadlineAt }) {
   const envelope = buildGenerateEnvelope({ projectId, systemPrompt, userPrompt });
   let lastError;
 
   for (const endpoint of endpointCandidates()) {
+    if (!hasRetryBudget(deadlineAt, Date.now(), 3_000)) break;
     try {
       const streamResponse = await fetch(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
         method: "POST",
         headers: headers(accessToken, "text/event-stream"),
         body: JSON.stringify(envelope),
-        signal: AbortSignal.timeout(55_000)
+        signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt))
       });
       if (streamResponse.ok) {
         const text = parseSseText(await streamResponse.text());
@@ -198,36 +270,42 @@ async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt }
         lastError = new Error(`Antigravity returned an empty response from ${endpoint}`);
         continue;
       }
-      const streamError = await streamResponse.text();
-      const error = statusError(`Antigravity API failed (${streamResponse.status}): ${streamError}`, streamResponse.status);
-      if (streamResponse.status >= 400 && streamResponse.status < 500 && streamResponse.status !== 429) throw error;
+      const error = await responseError("Antigravity API failed", streamResponse);
+      if (!shouldFailover(error.status)) throw error;
       lastError = error;
     } catch (error) {
       lastError = error;
-      if (Number(error?.status) >= 400 && Number(error?.status) < 500 && Number(error?.status) !== 429) throw error;
+      if (error?.name === "TimeoutError" || error?.name === "AbortError") {
+        lastError = statusError("Antigravity upstream timed out", 504);
+      } else if (Number(error?.status) && !shouldFailover(error.status)) {
+        throw error;
+      }
     }
   }
 
   for (const endpoint of endpointCandidates()) {
+    if (!hasRetryBudget(deadlineAt, Date.now(), 3_000)) break;
     try {
       const response = await fetch(`${endpoint}/v1internal:generateContent`, {
         method: "POST",
         headers: headers(accessToken),
         body: JSON.stringify(envelope),
-        signal: AbortSignal.timeout(55_000)
+        signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 15_000))
       });
       if (!response.ok) {
-        lastError = statusError(`Antigravity fallback failed (${response.status}): ${await response.text()}`, response.status);
+        lastError = await responseError("Antigravity fallback failed", response);
+        if (!shouldFailover(lastError.status)) throw lastError;
         continue;
       }
       const text = parseJsonResponse(await response.json());
       if (text) return text;
     } catch (error) {
       lastError = error;
+      if (Number(error?.status) && !shouldFailover(error.status)) throw error;
     }
   }
 
-  throw lastError ?? new Error("Antigravity request failed");
+  throw lastError ?? statusError("Antigravity request deadline reached", 504);
 }
 
 async function legacyCredential() {
@@ -250,39 +328,60 @@ async function legacyCredential() {
   };
 }
 
-async function resolveCredential(account) {
-  if (account?.refreshToken) {
+async function resolveCredential(account, deadlineAt) {
+  const refreshToken = account?.refreshTokenPlain || account?.refreshToken;
+  if (refreshToken) {
     const clientKind = account.oauthClientType === "web" ? "web" : "antigravity";
-    const accessToken = await refreshAccessToken(account.refreshToken, account.id, clientKind);
-    const projectId = await discoverProjectId(accessToken, account.projectId || "", account.id);
+    const accessToken = await refreshAccessToken(refreshToken, account.id, clientKind, deadlineAt);
+    const projectId = await discoverProjectId(accessToken, account.projectId || "", account.id, deadlineAt);
     return { accessToken, projectId };
   }
   if (account?.accessToken) {
-    const projectId = await discoverProjectId(account.accessToken, account.projectId || "", account.id);
+    const projectId = await discoverProjectId(account.accessToken, account.projectId || "", account.id, deadlineAt);
     return { accessToken: account.accessToken, projectId };
   }
   throw new Error("Account contains no usable Antigravity credential");
 }
 
 export async function generateCriticText({ systemPrompt, userPrompt }) {
+  const deadlineAt = Date.now() + TOTAL_REQUEST_BUDGET_MS;
+
   if (isRedisConfigured()) {
     const pool = await getPoolStatus().catch(() => null);
     if (pool?.total > 0) {
       const attempts = Math.max(1, pool.total);
+      const excludedIds = new Set();
       let lastError;
-      for (let i = 0; i < attempts; i += 1) {
-        const account = await getAccountForRequest();
-        if (!account) break;
+
+      for (let i = 0; i < attempts && hasRetryBudget(deadlineAt); i += 1) {
+        let account;
         try {
-          const { accessToken, projectId } = await resolveCredential(account);
-          const text = await callGenerate({ accessToken, projectId, systemPrompt, userPrompt });
-          await recordAccountSuccess(account.id).catch(() => {});
+          account = await getAccountForRequest({ excludedIds, model: LOCKED_MODEL });
+        } catch (selectionError) {
+          if (lastError) throw lastError;
+          throw selectionError;
+        }
+        if (!account) break;
+        excludedIds.add(account.id);
+
+        try {
+          const { accessToken, projectId } = await resolveCredential(account, deadlineAt);
+          const text = await callGenerate({ accessToken, projectId, systemPrompt, userPrompt, deadlineAt });
+          await recordAccountSuccess(account.id, LOCKED_MODEL).catch(() => {});
           return text;
         } catch (error) {
           lastError = error;
           const status = Number(error?.status) || 500;
-          await recordAccountFailure(account.id, status).catch(() => {});
-          if (status !== 429 && status !== 401 && status !== 403) throw error;
+          await recordAccountFailure(account.id, {
+            status,
+            model: LOCKED_MODEL,
+            retryAfterMs: error?.retryAfterMs,
+            resetsAtMs: error?.resetsAtMs,
+            errorText: error?.message
+          }).catch(() => {});
+          if (!shouldFailover(status)) throw error;
+        } finally {
+          await releaseAccountLease(account.id, account.leaseToken).catch(() => {});
         }
       }
       if (lastError) throw lastError;
@@ -293,8 +392,8 @@ export async function generateCriticText({ systemPrompt, userPrompt }) {
   if (!legacy) {
     throw new Error("No active Antigravity accounts. Add an account in the dashboard or configure a legacy token.");
   }
-  const { accessToken, projectId } = await resolveCredential(legacy);
-  return callGenerate({ accessToken, projectId, systemPrompt, userPrompt });
+  const { accessToken, projectId } = await resolveCredential(legacy, deadlineAt);
+  return callGenerate({ accessToken, projectId, systemPrompt, userPrompt, deadlineAt });
 }
 
 export async function getConfigurationStatus() {
@@ -306,6 +405,7 @@ export async function getConfigurationStatus() {
     configured: poolStatus.available > 0 || Boolean(process.env.ANTIGRAVITY_ACCESS_TOKEN || process.env.ANTIGRAVITY_REFRESH_TOKEN),
     model: LOCKED_MODEL,
     modelLocked: true,
+    upstreamModel: UPSTREAM_LOCKED_MODEL,
     pool: poolStatus,
     redisConfigured: isRedisConfigured(),
     mcpProtected: Boolean(process.env.MCP_SHARED_SECRET)
