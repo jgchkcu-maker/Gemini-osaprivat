@@ -1,7 +1,7 @@
 import { isAdminConfigured, isAdminRequest } from "../../../../src/admin/auth.js";
 import { getPoolStatus } from "../../../../src/accounts/store.js";
 import { isRedisConfigured } from "../../../../src/accounts/redis.js";
-import { isOAuthConfigured } from "../../../../src/accounts/oauth.js";
+import { isOAuthConfigured, isWebOAuthConfigured } from "../../../../src/accounts/oauth.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,6 +14,7 @@ export async function GET(request) {
     adminConfigured: isAdminConfigured(),
     redisConfigured: isRedisConfigured(),
     oauthConfigured: isOAuthConfigured(),
+    webOauthConfigured: isWebOAuthConfigured(),
     model: "gemini-3.8-flash-high",
     modelLocked: true
   };
