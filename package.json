@@ -1,0 +1,24 @@
+{
+  "name": "gemini-osaprivat",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "test": "node --test",
+    "check": "node --check src/critic/prompts.js && node --check src/critic/parser.js && node --check src/critic/service.js && node --check src/antigravity/client.js && node --check app/api/mcp/route.js && node --check app/api/health/route.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "^2.0.0",
+    "mcp-handler": "^2.0.0",
+    "next": "^16.0.0",
+    "zod": "^4.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  }
+}
