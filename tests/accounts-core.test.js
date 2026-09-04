@@ -4,8 +4,11 @@ import { buildCompareDeleteCommand, resolveRedisCredentials } from "../src/accou
 import { encryptSecret, decryptSecret } from "../src/accounts/crypto.js";
 import { accountRecordKey, normalizeAccountRecord } from "../src/accounts/store.js";
 import {
+  ANTIGRAVITY_NATIVE_REDIRECT_URI,
+  ANTIGRAVITY_NATIVE_SCOPES,
   parseOAuthCallback,
   resolveOAuthCredentials,
+  resolveOAuthMode,
   resolveWebOAuthCredentials,
   webOAuthRedirectUri
 } from "../src/accounts/oauth.js";
@@ -66,10 +69,35 @@ test("OAuth credentials support existing ANTIGRAVITY_CLIENT aliases", () => {
   );
 });
 
-test("direct web OAuth uses dedicated Google web client credentials", () => {
-  assert.deepEqual(
-    resolveWebOAuthCredentials({ GOOGLE_OAUTH_CLIENT_ID: "web-id", GOOGLE_OAUTH_CLIENT_SECRET: "web-secret" }),
-    { clientId: "web-id", clientSecret: "web-secret" }
+test("provider-native Antigravity OAuth is the default and matches 9router scopes", () => {
+  assert.equal(ANTIGRAVITY_NATIVE_REDIRECT_URI, "http://localhost:51121/oauth-callback");
+  assert.deepEqual(ANTIGRAVITY_NATIVE_SCOPES, [
+    "https://www.googleapis.com/auth/cloud-platform",
+    "https://www.googleapis.com/auth/userinfo.email",
+    "https://www.googleapis.com/auth/userinfo.profile",
+    "https://www.googleapis.com/auth/cclog",
+    "https://www.googleapis.com/auth/experimentsandconfigs"
+  ]);
+  assert.equal(
+    resolveOAuthMode(
+      { mode: undefined, origin: "https://gemini-osaprivat.vercel.app" },
+      {
+        ANTIGRAVITY_CLIENT_ID: "ag-id",
+        ANTIGRAVITY_CLIENT_SECRET: "ag-secret",
+        GOOGLE_OAUTH_CLIENT_ID: "web-id",
+        GOOGLE_OAUTH_CLIENT_SECRET: "web-secret"
+      }
+    ),
+    "antigravity"
+  );
+});
+
+test("direct web OAuth is opt-in and uses dedicated Google web client credentials", () => {
+  const env = { GOOGLE_OAUTH_CLIENT_ID: "web-id", GOOGLE_OAUTH_CLIENT_SECRET: "web-secret" };
+  assert.deepEqual(resolveWebOAuthCredentials(env), { clientId: "web-id", clientSecret: "web-secret" });
+  assert.equal(
+    resolveOAuthMode({ mode: "web", origin: "https://gemini-osaprivat.vercel.app" }, env),
+    "web"
   );
   assert.equal(
     webOAuthRedirectUri("https://gemini-osaprivat.vercel.app/"),
