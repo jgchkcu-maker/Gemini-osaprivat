@@ -102,6 +102,10 @@ MCP_SHARED_SECRET=optional-bearer-secret
 ANTIGRAVITY_API_ENDPOINT=optional-custom-endpoint
 GOOGLE_OAUTH_CLIENT_ID=optional-web-oauth-client
 GOOGLE_OAUTH_CLIENT_SECRET=optional-web-oauth-secret
+# Optional when the dashboard is opened from Vercel preview deployments.
+# GOOGLE_OAUTH_APP_URL=https://YOUR-PRODUCTION-DOMAIN
+# Optional full callback override.
+# GOOGLE_OAUTH_REDIRECT_URI=https://YOUR-PRODUCTION-DOMAIN/api/accounts/oauth/callback
 ```
 
 `ADMIN_PASSWORD` protects the dashboard with a Secure/HttpOnly/SameSite cookie. Keep every credential in Vercel Environment Variables and never commit credentials to GitHub.

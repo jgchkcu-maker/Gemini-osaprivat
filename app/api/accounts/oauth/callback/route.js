@@ -4,8 +4,8 @@ import { addAccount } from "../../../../../src/accounts/store.js";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-function popupHtml({ ok, message, email = "", origin }) {
-  const payload = JSON.stringify({ type: "gemini-critic-oauth", ok, message, email }).replace(/</g, "\\u003c");
+function popupHtml({ ok, message, email = "", origin, callbackOrigin }) {
+  const payload = JSON.stringify({ type: "gemini-critic-oauth", ok, message, email, callbackOrigin }).replace(/</g, "\\u003c");
   const targetOrigin = JSON.stringify(origin).replace(/</g, "\\u003c");
   const title = ok ? "Account added" : "OAuth failed";
   const body = ok
@@ -20,23 +20,26 @@ try {
   if (window.opener && !window.opener.closed) {
     window.opener.postMessage(${payload}, ${targetOrigin});
     setTimeout(() => window.close(), 500);
-  } else if (${ok ? "true" : "false"}) {
-    setTimeout(() => location.replace(${targetOrigin}), 700);
+  } else {
+    const returnUrl = new URL(${targetOrigin});
+    if (!${ok ? "true" : "false"}) returnUrl.searchParams.set("oauth_error", "oauth_failed");
+    setTimeout(() => location.replace(returnUrl.toString()), 700);
   }
 } catch (e) {
-  if (${ok ? "true" : "false"}) setTimeout(() => location.replace(${targetOrigin}), 700);
+  setTimeout(() => location.replace(${targetOrigin}), 700);
 }
 </script></body></html>`;
 }
 
 export async function GET(request) {
   const url = new URL(request.url);
-  const origin = url.origin;
+  const callbackOrigin = url.origin;
   try {
     const credentials = await finishOAuthCallback({
       state: url.searchParams.get("state"),
       code: url.searchParams.get("code"),
-      error: url.searchParams.get("error")
+      error: url.searchParams.get("error"),
+      errorDescription: url.searchParams.get("error_description")
     });
     const account = await addAccount({
       email: credentials.email,
@@ -44,12 +47,14 @@ export async function GET(request) {
       refreshToken: credentials.refreshToken,
       oauthClientType: credentials.oauthClientType
     });
-    return new Response(popupHtml({ ok: true, message: "Account added", email: account.email, origin }), {
+    const origin = credentials.returnOrigin || callbackOrigin;
+    return new Response(popupHtml({ ok: true, message: "Account added", email: account.email, origin, callbackOrigin }), {
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return new Response(popupHtml({ ok: false, message, origin }), {
+    const origin = error?.oauthReturnOrigin || callbackOrigin;
+    return new Response(popupHtml({ ok: false, message, origin, callbackOrigin }), {
       status: 400,
       headers: { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" }
     });

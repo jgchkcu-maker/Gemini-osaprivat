@@ -13,6 +13,6 @@ export async function POST(request) {
   }
   return Response.json(
     { ok: true },
-    { headers: { "Set-Cookie": adminCookie(), "Cache-Control": "no-store" } }
+    { headers: { "Set-Cookie": adminCookie(process.env, request), "Cache-Control": "no-store" } }
   );
 }
