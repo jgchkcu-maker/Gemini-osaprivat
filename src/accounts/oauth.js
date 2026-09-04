@@ -59,10 +59,10 @@ export function resolveOAuthCredentials(env = process.env) {
     "ANTIGRAVIT_ENT_SECRET"
   ]) || fuzzyAntigravityEnv(env, "clientSecret");
 
-  // Treat explicit Antigravity env values as a pair. If only one half is set,
-  // keep the configuration invalid rather than mixing a custom client with the
-  // embedded public client's other half.
-  if (clientId || clientSecret) return { clientId, clientSecret };
+  // A custom native OAuth client is an atomic pair. Use it only when both
+  // halves are present; otherwise ignore stale/partial overrides and fall back
+  // to the complete embedded public client instead of mixing credentials.
+  if (clientId && clientSecret) return { clientId, clientSecret };
 
   return embeddedAntigravityOAuthCredentials();
 }
@@ -145,7 +145,7 @@ function oauthClient(clientKind = "antigravity", env = process.env) {
     if (clientKind === "web") {
       throw new Error("Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in Vercel for one-click Google OAuth");
     }
-    throw new Error("Set both ANTIGRAVITY_CLIENT_ID and ANTIGRAVITY_CLIENT_SECRET, or remove the partial override to use the embedded provider-native OAuth client");
+    throw new Error("Provider-native Antigravity OAuth client is unavailable");
   }
   return credentials;
 }
