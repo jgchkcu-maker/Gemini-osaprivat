@@ -1,6 +1,11 @@
 import { createMcpHandler } from "mcp-handler";
-import { z } from "zod";
 import { challenge, compare } from "../../../src/critic/service.js";
+import {
+  challengeInputSchema,
+  challengeOutputSchema,
+  compareInputSchema,
+  compareOutputSchema
+} from "../../../src/critic/schemas.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -8,6 +13,7 @@ export const maxDuration = 60;
 
 function asToolResult(value) {
   return {
+    structuredContent: value,
     content: [
       {
         type: "text",
@@ -31,15 +37,9 @@ const mcp = createMcpHandler((server) => {
     {
       title: "Challenge a proposal",
       description:
-        "Ask Gemini 3.8 Flash High to critically review a plan or decision. Gemini is critique-only: it cannot edit files, run commands, browse, deploy, or execute the task.",
-      inputSchema: z.object({
-        task: z.string().min(1).max(30000),
-        proposal: z.string().min(1).max(60000),
-        context: z.string().max(60000).optional(),
-        focus: z
-          .enum(["general", "logic", "architecture", "code", "ux", "simplicity", "failure_modes"])
-          .default("general")
-      })
+        "Ask Gemini 3.8 Flash High to independently review a plan or decision. Supply relevant evidence in context for architecture/code reviews. Gemini is critique-only: it cannot edit files, run commands, browse, deploy, or execute the task.",
+      inputSchema: challengeInputSchema,
+      outputSchema: challengeOutputSchema
     },
     async (input) => {
       try {
@@ -55,13 +55,9 @@ const mcp = createMcpHandler((server) => {
     {
       title: "Compare candidate approaches",
       description:
-        "Ask Gemini 3.8 Flash High to rank 2-6 options and identify trade-offs. Gemini only judges the options and does not execute any of them.",
-      inputSchema: z.object({
-        task: z.string().min(1).max(30000),
-        options: z.array(z.string().min(1).max(30000)).min(2).max(6),
-        constraints: z.string().max(30000).optional(),
-        context: z.string().max(60000).optional()
-      })
+        "Ask Gemini 3.8 Flash High to rank 2-6 credible options and identify trade-offs. Supply relevant evidence in context. Gemini only judges the options and does not execute any of them.",
+      inputSchema: compareInputSchema,
+      outputSchema: compareOutputSchema
     },
     async (input) => {
       try {
