@@ -9,7 +9,9 @@ export async function POST(request) {
   if (unauthorized) return unauthorized;
   try {
     const origin = new URL(request.url).origin;
-    return Response.json(await startOAuthFlow({ origin }));
+    const body = await request.json().catch(() => ({}));
+    const mode = body?.mode === "web" ? "web" : "native";
+    return Response.json(await startOAuthFlow({ origin, mode }));
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : String(error) }, { status: 400 });
   }
