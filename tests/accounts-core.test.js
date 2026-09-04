@@ -2,7 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveRedisCredentials } from "../src/accounts/redis.js";
 import { encryptSecret, decryptSecret } from "../src/accounts/crypto.js";
-import { parseOAuthCallback, resolveOAuthCredentials } from "../src/accounts/oauth.js";
+import {
+  parseOAuthCallback,
+  resolveOAuthCredentials,
+  resolveWebOAuthCredentials,
+  webOAuthRedirectUri
+} from "../src/accounts/oauth.js";
 
 test("Redis credentials support Vercel KV integration names", () => {
   assert.deepEqual(
@@ -29,6 +34,17 @@ test("OAuth credentials support existing ANTIGRAVITY_CLIENT aliases", () => {
   assert.deepEqual(
     resolveOAuthCredentials({ ANTIGRAVITY_CLIENT_ID: "id", ANTIGRAVITY_CLIENT_SECRET: "secret" }),
     { clientId: "id", clientSecret: "secret" }
+  );
+});
+
+test("direct web OAuth uses dedicated Google web client credentials", () => {
+  assert.deepEqual(
+    resolveWebOAuthCredentials({ GOOGLE_OAUTH_CLIENT_ID: "web-id", GOOGLE_OAUTH_CLIENT_SECRET: "web-secret" }),
+    { clientId: "web-id", clientSecret: "web-secret" }
+  );
+  assert.equal(
+    webOAuthRedirectUri("https://gemini-osaprivat.vercel.app/"),
+    "https://gemini-osaprivat.vercel.app/api/accounts/oauth/callback"
   );
 });
 
