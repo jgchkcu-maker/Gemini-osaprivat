@@ -43,12 +43,10 @@ export function parseCriticJson(text) {
   };
 }
 
-function challengeFallback(cleaned) {
+function challengeFallback() {
   return {
     verdict: "revise",
-    summary: cleaned
-      ? `Gemini returned an invalid structured critique: ${cleaned.slice(0, 2000)}`
-      : "Gemini returned an empty or invalid structured critique.",
+    summary: "Gemini returned an empty or invalid structured critique.",
     objections: [],
     missing_considerations: [],
     alternatives: [],
@@ -57,26 +55,24 @@ function challengeFallback(cleaned) {
   };
 }
 
-function compareFallback(cleaned) {
+function compareFallback() {
   return {
     preferred_option: null,
     ranking: [],
     weaknesses: [],
-    decision_rule: cleaned
-      ? `Gemini returned an invalid structured comparison: ${cleaned.slice(0, 2000)}`
-      : "Gemini returned an empty or invalid structured comparison.",
+    decision_rule: "Gemini returned an empty or invalid structured comparison.",
     confidence: 0.15
   };
 }
 
 export function parseChallengeResult(text) {
-  const { cleaned, value } = parseJsonCandidate(text);
+  const { value } = parseJsonCandidate(text);
   const parsed = challengeOutputSchema.safeParse(value);
-  return parsed.success ? parsed.data : challengeFallback(cleaned);
+  return parsed.success ? parsed.data : challengeFallback();
 }
 
 export function parseCompareResult(text) {
-  const { cleaned, value } = parseJsonCandidate(text);
+  const { value } = parseJsonCandidate(text);
   const parsed = compareOutputSchema.safeParse(value);
-  return parsed.success ? parsed.data : compareFallback(cleaned);
+  return parsed.success ? parsed.data : compareFallback();
 }
