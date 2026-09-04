@@ -6,6 +6,8 @@ import {
   compareInputSchema,
   compareOutputSchema
 } from "../../../src/critic/schemas.js";
+import { checkMcpRateLimit } from "../../../src/mcp/rate-limit.js";
+import { isAuthorizedBearer } from "../../../src/mcp/security.js";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -71,9 +73,11 @@ const mcp = createMcpHandler((server) => {
 
 async function handler(request) {
   const secret = process.env.MCP_SHARED_SECRET?.trim();
+  let authenticated = false;
+
   if (secret) {
     const authorization = request.headers.get("authorization");
-    if (authorization !== `Bearer ${secret}`) {
+    if (!isAuthorizedBearer(authorization, secret)) {
       return Response.json(
         { error: "unauthorized" },
         {
@@ -82,7 +86,24 @@ async function handler(request) {
         }
       );
     }
+    authenticated = true;
   }
+
+  const rateLimit = await checkMcpRateLimit(request, { authenticated });
+  if (!rateLimit.allowed) {
+    return Response.json(
+      { error: "rate_limited" },
+      {
+        status: 429,
+        headers: {
+          "Retry-After": String(rateLimit.retryAfterSeconds),
+          "X-RateLimit-Limit": String(rateLimit.limit),
+          "X-RateLimit-Remaining": String(rateLimit.remaining)
+        }
+      }
+    );
+  }
+
   return mcp(request);
 }
 
