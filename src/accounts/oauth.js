@@ -15,8 +15,19 @@ export const ANTIGRAVITY_NATIVE_SCOPES = [
 const ENDPOINTS = ["https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com"];
 
 export function resolveOAuthCredentials(env = process.env) {
-  const clientId = (env.ANTIGRAVITY_OAUTH_CLIENT_ID || env.ANTIGRAVITY_CLIENT_ID || "").trim();
-  const clientSecret = (env.ANTIGRAVITY_OAUTH_CLIENT_SECRET || env.ANTIGRAVITY_CLIENT_SECRET || "").trim();
+  const clientId = (
+    env.ANTIGRAVITY_OAUTH_CLIENT_ID
+    || env.ANTIGRAVITY_CLIENT_ID
+    || env.ANTIGRAVIT_CLIENT_ID
+    || ""
+  ).trim();
+  const clientSecret = (
+    env.ANTIGRAVITY_OAUTH_CLIENT_SECRET
+    || env.ANTIGRAVITY_CLIENT_SECRET
+    || env.ANTIGRAVIT_CLIENT_SECRET
+    || env.ANTIGRAVIT_ENT_SECRET
+    || ""
+  ).trim();
   return { clientId, clientSecret };
 }
 
