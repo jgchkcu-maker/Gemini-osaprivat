@@ -1,6 +1,6 @@
 {
   "name": "gemini-osaprivat",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -8,7 +8,7 @@
     "build": "next build",
     "start": "next start",
     "test": "node --test",
-    "check": "node --check src/critic/prompts.js && node --check src/critic/parser.js && node --check src/critic/service.js && node --check src/antigravity/client.js && node --check src/accounts/pool.js && node --check src/accounts/redis.js && node --check src/accounts/crypto.js && node --check src/accounts/oauth.js && node --check src/accounts/store.js && node --check src/admin/auth.js && node --check app/api/mcp/route.js && node --check app/api/health/route.js && node --check app/api/accounts/route.js && node --check app/api/accounts/oauth/start/route.js && node --check app/api/accounts/oauth/finish/route.js && node --check app/api/admin/status/route.js && node --check app/api/admin/login/route.js && node --check app/api/admin/logout/route.js"
+    "check": "node --check src/critic/prompts.js && node --check src/critic/parser.js && node --check src/critic/service.js && node --check src/antigravity/client.js && node --check src/accounts/pool.js && node --check src/accounts/redis.js && node --check src/accounts/crypto.js && node --check src/accounts/oauth.js && node --check src/accounts/store.js && node --check src/admin/auth.js && node --check app/api/mcp/route.js && node --check app/api/health/route.js && node --check app/api/accounts/route.js && node --check app/api/accounts/oauth/start/route.js && node --check app/api/accounts/oauth/finish/route.js && node --check app/api/accounts/oauth/callback/route.js && node --check app/api/admin/status/route.js && node --check app/api/admin/login/route.js && node --check app/api/admin/logout/route.js"
   },
   "engines": {
     "node": ">=20"
