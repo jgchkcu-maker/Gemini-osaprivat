@@ -28,3 +28,12 @@ test("MCP tool registration advertises output schemas", async () => {
   assert.match(source, /outputSchema:\s*challengeOutputSchema/);
   assert.match(source, /outputSchema:\s*compareOutputSchema/);
 });
+
+test("MCP route wires constant-time bearer validation and distributed rate limiting", async () => {
+  const source = await routeSource();
+  assert.match(source, /isAuthorizedBearer/);
+  assert.match(source, /checkMcpRateLimit/);
+  assert.match(source, /status:\s*429/);
+  assert.match(source, /Retry-After/);
+  assert.doesNotMatch(source, /authorization\s*!==\s*`Bearer/);
+});
