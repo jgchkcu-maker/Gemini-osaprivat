@@ -96,7 +96,7 @@ function Login({ status, onLogin }) {
 }
 
 function AddAccountModal({ status, onClose, onAdded }) {
-  const [mode, setMode] = useState(status.oauthConfigured ? "oauth" : "import");
+  const [mode, setMode] = useState(status.webOauthConfigured || status.oauthConfigured ? "oauth" : "import");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [flow, setFlow] = useState(null);
@@ -105,17 +105,43 @@ function AddAccountModal({ status, onClose, onAdded }) {
   const [projectId, setProjectId] = useState("");
   const [refreshToken, setRefreshToken] = useState("");
 
+  useEffect(() => {
+    async function onMessage(event) {
+      if (event.origin !== window.location.origin) return;
+      if (event.data?.type !== "gemini-critic-oauth") return;
+      setBusy(false);
+      if (!event.data.ok) {
+        setError(event.data.message || "Google OAuth failed");
+        return;
+      }
+      try {
+        await onAdded();
+        onClose();
+      } catch (err) {
+        setError(err.message);
+      }
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, [onAdded, onClose]);
+
   async function startOAuth() {
     setBusy(true);
     setError("");
     try {
       const next = await api("/api/accounts/oauth/start", { method: "POST", body: "{}" });
       setFlow(next);
-      window.open(next.authorizationUrl, "_blank", "noopener,noreferrer");
+      const popup = window.open(
+        next.authorizationUrl,
+        "gemini-critic-google-oauth",
+        "popup=yes,width=540,height=760,resizable=yes,scrollbars=yes"
+      );
+      if (!popup) throw new Error("Browser blocked the Google sign-in window. Allow pop-ups for this site and try again.");
+      if (next.mode === "web") popup.focus?.();
+      else setBusy(false);
     } catch (err) {
-      setError(err.message);
-    } finally {
       setBusy(false);
+      setError(err.message);
     }
   }
 
@@ -172,26 +198,39 @@ function AddAccountModal({ status, onClose, onAdded }) {
 
         {mode === "oauth" ? (
           <div className="modalBody">
-            {!status.oauthConfigured ? (
-              <div className="setupNotice compact">
-                <strong>OAuth needs two Vercel secrets</strong>
-                <span><code>ANTIGRAVITY_OAUTH_CLIENT_ID</code> and <code>ANTIGRAVITY_OAUTH_CLIENT_SECRET</code>. Until then use “Import credential”.</span>
-              </div>
-            ) : !flow ? (
+            {status.webOauthConfigured ? (
               <>
-                <p className="subtle">Sign in with a Google account that has Antigravity access. Gemini still receives no tools or workspace access.</p>
-                <button className="primaryButton" onClick={startOAuth} disabled={busy}>{busy ? "Preparing…" : "Continue with Google"}</button>
+                <p className="subtle">One-click sign-in. Google opens an account chooser, then the account is encrypted and added to the pool automatically.</p>
+                <button className="primaryButton" onClick={startOAuth} disabled={busy}>
+                  {busy ? "Waiting for Google…" : "Continue with Google"}
+                </button>
+                {busy ? <div className="stepRow"><span>✓</span><div><b>Finish Google sign-in</b><p>This window will update automatically after authorization.</p></div></div> : null}
               </>
+            ) : status.oauthConfigured ? (
+              !flow ? (
+                <>
+                  <div className="setupNotice compact">
+                    <strong>Legacy OAuth is available</strong>
+                    <span>For true one-click login create a Google <b>Web application</b> OAuth client and add <code>GOOGLE_OAUTH_CLIENT_ID</code> + <code>GOOGLE_OAUTH_CLIENT_SECRET</code>. You can still use the localhost fallback below.</span>
+                  </div>
+                  <button className="primaryButton" onClick={startOAuth} disabled={busy}>{busy ? "Preparing…" : "Use legacy Google login"}</button>
+                </>
+              ) : (
+                <>
+                  <div className="stepRow"><span>1</span><div><b>Google sign-in opened</b><p>Finish sign-in in the new tab.</p></div></div>
+                  <div className="stepRow"><span>2</span><div><b>Copy the final localhost URL</b><p>The localhost page may fail to load. Copy the full address from the browser bar.</p></div></div>
+                  <label>
+                    <span>Callback URL</span>
+                    <textarea value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:51121/oauth-callback?state=…&code=…" />
+                  </label>
+                  <button className="primaryButton" onClick={finishOAuth} disabled={busy || !callbackUrl}>{busy ? "Adding…" : "Add to pool"}</button>
+                </>
+              )
             ) : (
-              <>
-                <div className="stepRow"><span>1</span><div><b>Google sign-in opened</b><p>Finish sign-in in the new tab.</p></div></div>
-                <div className="stepRow"><span>2</span><div><b>Copy the final localhost URL</b><p>The localhost page may fail to load — that is expected. Copy the full address from the browser bar.</p></div></div>
-                <label>
-                  <span>Callback URL</span>
-                  <textarea value={callbackUrl} onChange={(event) => setCallbackUrl(event.target.value)} placeholder="http://localhost:51121/oauth-callback?state=…&code=…" />
-                </label>
-                <button className="primaryButton" onClick={finishOAuth} disabled={busy || !callbackUrl}>{busy ? "Adding…" : "Add to pool"}</button>
-              </>
+              <div className="setupNotice compact">
+                <strong>Set up Google Web OAuth once</strong>
+                <span>Create a Google OAuth client of type <b>Web application</b>, authorize <code>{typeof window !== "undefined" ? `${window.location.origin}/api/accounts/oauth/callback` : "/api/accounts/oauth/callback"}</code>, then add its ID and secret to Vercel as <code>GOOGLE_OAUTH_CLIENT_ID</code> and <code>GOOGLE_OAUTH_CLIENT_SECRET</code>.</span>
+              </div>
             )}
           </div>
         ) : (
