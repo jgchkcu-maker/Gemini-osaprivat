@@ -9,13 +9,24 @@ function popupHtml({ ok, message, email = "", origin }) {
   const targetOrigin = JSON.stringify(origin).replace(/</g, "\\u003c");
   const title = ok ? "Account added" : "OAuth failed";
   const body = ok
-    ? `${email || "Google account"} was added to the pool. You can close this window.`
+    ? `${email || "Google account"} was added to the pool. Returning to the dashboard…`
     : message;
   return `<!doctype html>
 <html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${title}</title>
 <style>body{margin:0;background:#09090c;color:#f7f7fb;font-family:system-ui,-apple-system,sans-serif;display:grid;min-height:100vh;place-items:center;padding:24px;box-sizing:border-box}.card{max-width:420px;padding:28px;border:1px solid #2b2b35;border-radius:28px;background:#15151bcc;box-shadow:0 24px 80px #0008}h1{margin:0 0 10px;font-size:28px}p{color:#b8b8c6;line-height:1.5}.dot{width:12px;height:12px;border-radius:50%;background:${ok ? "#5de1b5" : "#ff6b7a"};display:inline-block;margin-right:8px}</style></head>
 <body><div class="card"><h1><span class="dot"></span>${title}</h1><p>${String(body).replace(/[<>&]/g, "")}</p></div>
-<script>try{if(window.opener){window.opener.postMessage(${payload},${targetOrigin});setTimeout(()=>window.close(),500)}}catch(e){}</script></body></html>`;
+<script>
+try {
+  if (window.opener && !window.opener.closed) {
+    window.opener.postMessage(${payload}, ${targetOrigin});
+    setTimeout(() => window.close(), 500);
+  } else if (${ok ? "true" : "false"}) {
+    setTimeout(() => location.replace(${targetOrigin}), 700);
+  }
+} catch (e) {
+  if (${ok ? "true" : "false"}) setTimeout(() => location.replace(${targetOrigin}), 700);
+}
+</script></body></html>`;
 }
 
 export async function GET(request) {
