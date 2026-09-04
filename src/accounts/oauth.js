@@ -3,10 +3,9 @@ import { deleteKey, getJson, setJson } from "./redis.js";
 
 const AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth";
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
-const LEGACY_REDIRECT_URI = "http://localhost:51121/oauth-callback";
+export const ANTIGRAVITY_NATIVE_REDIRECT_URI = "http://localhost:51121/oauth-callback";
 const FLOW_TTL_SECONDS = 10 * 60;
-const SCOPES = [
-  "https://www.googleapis.com/auth/aicode",
+export const ANTIGRAVITY_NATIVE_SCOPES = [
   "https://www.googleapis.com/auth/cloud-platform",
   "https://www.googleapis.com/auth/userinfo.email",
   "https://www.googleapis.com/auth/userinfo.profile",
@@ -32,13 +31,23 @@ export function webOAuthRedirectUri(origin) {
   return `${url.origin}/api/accounts/oauth/callback`;
 }
 
+export function isWebOAuthConfigured(env = process.env) {
+  const { clientId, clientSecret } = resolveWebOAuthCredentials(env);
+  return Boolean(clientId && clientSecret);
+}
+
+export function resolveOAuthMode({ mode, origin } = {}, env = process.env) {
+  if (mode === "web" && origin && isWebOAuthConfigured(env)) return "web";
+  return "antigravity";
+}
+
 function oauthClient(clientKind = "antigravity", env = process.env) {
   const credentials = clientKind === "web" ? resolveWebOAuthCredentials(env) : resolveOAuthCredentials(env);
   if (!credentials.clientId || !credentials.clientSecret) {
     if (clientKind === "web") {
       throw new Error("Set GOOGLE_OAUTH_CLIENT_ID and GOOGLE_OAUTH_CLIENT_SECRET in Vercel for one-click Google OAuth");
     }
-    throw new Error("Set ANTIGRAVITY_CLIENT_ID/SECRET in Vercel for legacy Antigravity OAuth");
+    throw new Error("Set ANTIGRAVITY_CLIENT_ID/SECRET in Vercel for provider-native Antigravity OAuth");
   }
   return credentials;
 }
@@ -50,18 +59,14 @@ function metadataHeaders(accessToken) {
     Accept: "application/json",
     "User-Agent": "antigravity/1.16.5 linux/x64",
     "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": JSON.stringify({ ideType: 6, platform: 2, pluginType: 2 })
+    "Client-Metadata": JSON.stringify({ ideType: 9, platform: 3, pluginType: 2 }),
+    "x-request-source": "local"
   };
 }
 
-export function isWebOAuthConfigured(env = process.env) {
-  const { clientId, clientSecret } = resolveWebOAuthCredentials(env);
-  return Boolean(clientId && clientSecret);
-}
-
 export function isOAuthConfigured(env = process.env) {
-  const legacy = resolveOAuthCredentials(env);
-  return isWebOAuthConfigured(env) || Boolean(legacy.clientId && legacy.clientSecret);
+  const native = resolveOAuthCredentials(env);
+  return Boolean(native.clientId && native.clientSecret) || isWebOAuthConfigured(env);
 }
 
 export function parseOAuthCallback(raw, expectedState) {
@@ -72,7 +77,7 @@ export function parseOAuthCallback(raw, expectedState) {
     url = new URL(input);
   } catch {
     const query = input.startsWith("?") ? input.slice(1) : input;
-    url = new URL(`${LEGACY_REDIRECT_URI}?${query}`);
+    url = new URL(`${ANTIGRAVITY_NATIVE_REDIRECT_URI}?${query}`);
   }
   const providerError = url.searchParams.get("error");
   if (providerError) throw new Error(`OAuth provider error: ${providerError.slice(0, 120)}`);
@@ -83,11 +88,10 @@ export function parseOAuthCallback(raw, expectedState) {
   return { state, code };
 }
 
-export async function startOAuthFlow({ origin } = {}) {
-  const useWeb = Boolean(origin && isWebOAuthConfigured());
-  const clientKind = useWeb ? "web" : "antigravity";
+export async function startOAuthFlow({ origin, mode } = {}) {
+  const clientKind = resolveOAuthMode({ mode, origin });
   const { clientId } = oauthClient(clientKind);
-  const redirectUri = useWeb ? webOAuthRedirectUri(origin) : LEGACY_REDIRECT_URI;
+  const redirectUri = clientKind === "web" ? webOAuthRedirectUri(origin) : ANTIGRAVITY_NATIVE_REDIRECT_URI;
   const verifier = crypto.randomBytes(32).toString("base64url");
   const challenge = crypto.createHash("sha256").update(verifier).digest("base64url");
   const state = crypto.randomBytes(32).toString("base64url");
@@ -102,18 +106,18 @@ export async function startOAuthFlow({ origin } = {}) {
     client_id: clientId,
     response_type: "code",
     redirect_uri: redirectUri,
-    scope: SCOPES.join(" "),
+    scope: ANTIGRAVITY_NATIVE_SCOPES.join(" "),
     code_challenge: challenge,
     code_challenge_method: "S256",
     state,
     access_type: "offline",
-    include_granted_scopes: "true",
-    prompt: "consent select_account"
+    prompt: "consent"
   });
 
   return {
     state,
-    mode: useWeb ? "web" : "manual",
+    mode: clientKind === "web" ? "web" : "manual",
+    oauthClientType: clientKind,
     redirectUri,
     authorizationUrl: `${AUTH_URL}?${params.toString()}`
   };
@@ -123,7 +127,7 @@ async function exchangeCode(code, verifier, clientKind, redirectUri) {
   const { clientId, clientSecret } = oauthClient(clientKind);
   const response = await fetch(TOKEN_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: { "Content-Type": "application/x-www-form-urlencoded", Accept: "application/json" },
     body: new URLSearchParams({
       client_id: clientId,
       client_secret: clientSecret,
@@ -139,14 +143,14 @@ async function exchangeCode(code, verifier, clientKind, redirectUri) {
     throw new Error(`OAuth token exchange failed (${response.status}): ${body?.error_description || body?.error || "unknown error"}`);
   }
   if (!body.access_token || !body.refresh_token) {
-    throw new Error("Google did not return both access and refresh tokens. Remove the app from Google permissions and try again.");
+    throw new Error("Google did not return both access and refresh tokens. Remove the app permission and try again.");
   }
   return body;
 }
 
 async function fetchEmail(accessToken) {
   const response = await fetch("https://www.googleapis.com/oauth2/v1/userinfo?alt=json", {
-    headers: { Authorization: `Bearer ${accessToken}` },
+    headers: { Authorization: `Bearer ${accessToken}`, "x-request-source": "local" },
     signal: AbortSignal.timeout(15_000)
   });
   if (!response.ok) return "unknown-account";
@@ -161,7 +165,7 @@ export async function discoverProjectIdForToken(accessToken) {
       const response = await fetch(`${endpoint}/v1internal:loadCodeAssist`, {
         method: "POST",
         headers: metadataHeaders(accessToken),
-        body: JSON.stringify({ metadata: { ideType: 6, platform: 2, pluginType: 2 } }),
+        body: JSON.stringify({ metadata: { ideType: 9, platform: 3, pluginType: 2 } }),
         signal: AbortSignal.timeout(20_000)
       });
       if (!response.ok) {
