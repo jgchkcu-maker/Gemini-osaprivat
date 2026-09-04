@@ -13,7 +13,8 @@ export const ANTIGRAVITY_NATIVE_SCOPES = [
   "https://www.googleapis.com/auth/cclog",
   "https://www.googleapis.com/auth/experimentsandconfigs"
 ];
-const ENDPOINTS = ["https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com"];
+const ANTIGRAVITY_PROJECT_BASE_URL = "https://cloudcode-pa.googleapis.com";
+const ANTIGRAVITY_METADATA = Object.freeze({ ideType: 9, platform: 3, pluginType: 2 });
 const WEB_OAUTH_APP_URL_KEYS = ["GOOGLE_OAUTH_APP_URL", "OAUTH_APP_URL", "APP_URL", "NEXT_PUBLIC_APP_URL", "VERCEL_PROJECT_PRODUCTION_URL"];
 const WEB_OAUTH_REDIRECT_URI_KEYS = ["GOOGLE_OAUTH_REDIRECT_URI", "OAUTH_REDIRECT_URI"];
 
@@ -157,7 +158,7 @@ function metadataHeaders(accessToken) {
     Accept: "application/json",
     "User-Agent": "antigravity/1.16.5 linux/x64",
     "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
-    "Client-Metadata": JSON.stringify({ ideType: 9, platform: 3, pluginType: 2 }),
+    "Client-Metadata": JSON.stringify(ANTIGRAVITY_METADATA),
     "x-request-source": "local"
   };
 }
@@ -265,30 +266,107 @@ async function fetchEmail(accessToken) {
   return data?.email || "unknown-account";
 }
 
-export async function discoverProjectIdForToken(accessToken) {
-  let lastError;
-  for (const endpoint of ENDPOINTS) {
+export function extractAntigravityProjectId(data) {
+  const project = data?.cloudaicompanionProject;
+  if (typeof project === "string") return project.trim();
+  if (project && typeof project === "object") return String(project.id ?? "").trim();
+  return "";
+}
+
+export function selectAntigravityTierId(data) {
+  if (Array.isArray(data?.allowedTiers)) {
+    const tier = data.allowedTiers.find((item) => item?.isDefault === true && String(item?.id ?? "").trim());
+    if (tier) return String(tier.id).trim();
+  }
+  return "legacy-tier";
+}
+
+function extractOnboardProjectId(data) {
+  return extractAntigravityProjectId(data?.response);
+}
+
+function boundedTimeoutMs(value) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return 8_000;
+  return Math.max(1_000, Math.min(20_000, Math.floor(numeric)));
+}
+
+export async function ensureAntigravityProjectForToken(accessToken, options = {}) {
+  if (!String(accessToken ?? "").trim()) throw new Error("Antigravity access token is required for project binding");
+
+  const fetchImpl = options.fetchImpl ?? fetch;
+  const sleepImpl = options.sleepImpl ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
+  const maxOnboardAttempts = Math.max(1, Math.min(10, Math.floor(Number(options.maxOnboardAttempts ?? 5)) || 1));
+  const fetchTimeoutMs = boundedTimeoutMs(options.fetchTimeoutMs ?? 8_000);
+  const headers = metadataHeaders(accessToken);
+  const metadata = { ...ANTIGRAVITY_METADATA };
+
+  const loadResponse = await fetchImpl(`${ANTIGRAVITY_PROJECT_BASE_URL}/v1internal:loadCodeAssist`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ metadata }),
+    signal: AbortSignal.timeout(fetchTimeoutMs)
+  });
+  if (!loadResponse.ok) {
+    const body = await loadResponse.text().catch(() => "");
+    throw new Error(`Project discovery failed (${loadResponse.status}): ${body.slice(0, 500)}`);
+  }
+
+  const loadData = await loadResponse.json().catch(() => ({}));
+  let projectId = extractAntigravityProjectId(loadData);
+  const tierId = selectAntigravityTierId(loadData);
+  let onboarded = false;
+  let lastOnboardError = null;
+
+  for (let attempt = 1; attempt <= maxOnboardAttempts; attempt += 1) {
     try {
-      const response = await fetch(`${endpoint}/v1internal:loadCodeAssist`, {
+      const onboardResponse = await fetchImpl(`${ANTIGRAVITY_PROJECT_BASE_URL}/v1internal:onboardUser`, {
         method: "POST",
-        headers: metadataHeaders(accessToken),
-        body: JSON.stringify({ metadata: { ideType: 9, platform: 3, pluginType: 2 } }),
-        signal: AbortSignal.timeout(20_000)
+        headers,
+        body: JSON.stringify({ tierId, metadata }),
+        signal: AbortSignal.timeout(fetchTimeoutMs)
       });
-      if (!response.ok) {
-        lastError = new Error(`Project discovery failed (${response.status})`);
-        continue;
+      if (!onboardResponse.ok) {
+        const body = await onboardResponse.text().catch(() => "");
+        lastOnboardError = new Error(`Antigravity onboarding failed (${onboardResponse.status}): ${body.slice(0, 500)}`);
+      } else {
+        const result = await onboardResponse.json().catch(() => ({}));
+        projectId = extractOnboardProjectId(result) || projectId;
+        if (result?.done === true) {
+          onboarded = true;
+          break;
+        }
       }
-      const data = await response.json();
-      const projectId = typeof data.cloudaicompanionProject === "string"
-        ? data.cloudaicompanionProject
-        : data.cloudaicompanionProject?.id;
-      if (projectId) return projectId;
     } catch (error) {
-      lastError = error;
+      lastOnboardError = error;
+    }
+
+    if (attempt < maxOnboardAttempts) await sleepImpl(1500);
+  }
+
+  if (!projectId && onboarded) {
+    try {
+      const reloadResponse = await fetchImpl(`${ANTIGRAVITY_PROJECT_BASE_URL}/v1internal:loadCodeAssist`, {
+        method: "POST",
+        headers,
+        body: JSON.stringify({ metadata }),
+        signal: AbortSignal.timeout(fetchTimeoutMs)
+      });
+      if (reloadResponse.ok) {
+        projectId = extractAntigravityProjectId(await reloadResponse.json().catch(() => ({})));
+      }
+    } catch {
+      // The onboarding response may already have supplied the usable project.
     }
   }
-  throw lastError ?? new Error("Could not discover Antigravity project ID");
+
+  if (!projectId) throw lastOnboardError ?? new Error("Could not discover or onboard an Antigravity project ID");
+  return { projectId, tierId, onboarded };
+}
+
+export async function discoverProjectIdForToken(accessToken) {
+  const result = await ensureAntigravityProjectForToken(accessToken);
+  return result.projectId;
 }
 
 async function completeOAuthCode(state, code) {

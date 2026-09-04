@@ -1,6 +1,10 @@
 import crypto from "node:crypto";
 import { isRedisConfigured } from "../accounts/redis.js";
-import { resolveOAuthCredentials, resolveWebOAuthCredentials } from "../accounts/oauth.js";
+import {
+  ensureAntigravityProjectForToken,
+  resolveOAuthCredentials,
+  resolveWebOAuthCredentials
+} from "../accounts/oauth.js";
 import {
   getAccountForRequest,
   getPoolStatus,
@@ -295,6 +299,22 @@ async function responseError(prefix, response) {
   );
 }
 
+export async function withProjectBindingRetry({ projectId, run, repair }) {
+  try {
+    return { value: await run(projectId), projectId, repaired: false };
+  } catch (error) {
+    if (Number(error?.status) !== 404) throw error;
+    const repairResult = await repair(error);
+    const repairedProjectId = String(repairResult?.projectId ?? "").trim();
+    if (!repairedProjectId) throw error;
+    return {
+      value: await run(repairedProjectId),
+      projectId: repairedProjectId,
+      repaired: true
+    };
+  }
+}
+
 async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt, deadlineAt }) {
   const envelope = buildGenerateEnvelope({ projectId, systemPrompt, userPrompt });
   let lastError;
@@ -350,6 +370,35 @@ async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt, 
   }
 
   throw lastError ?? statusError("Antigravity request deadline reached", 504);
+}
+
+async function callGenerateWithProjectRepair({ accessToken, projectId, cacheKey, systemPrompt, userPrompt, deadlineAt }) {
+  return withProjectBindingRetry({
+    projectId,
+    run: (activeProjectId) => callGenerate({
+      accessToken,
+      projectId: activeProjectId,
+      systemPrompt,
+      userPrompt,
+      deadlineAt
+    }),
+    repair: async () => {
+      if (!hasRetryBudget(deadlineAt, Date.now(), 10_000)) {
+        throw statusError("Not enough request budget to repair Antigravity project binding", 504);
+      }
+      const repaired = await ensureAntigravityProjectForToken(accessToken, {
+        maxOnboardAttempts: 3,
+        fetchTimeoutMs: 5_000
+      });
+      if (repaired.projectId && cacheKey) {
+        projectCache.set(cacheKey, {
+          projectId: repaired.projectId,
+          expiresAt: Date.now() + TOKEN_CACHE_MS
+        });
+      }
+      return repaired;
+    }
+  });
 }
 
 async function legacyCredential() {
@@ -414,15 +463,17 @@ export async function generateCriticText({ systemPrompt, userPrompt }) {
           const resolved = await resolveCredential(account, deadlineAt);
           resolvedAccessToken = resolved.accessToken;
           resolvedProjectId = resolved.projectId;
-          const text = await callGenerate({
+          const generated = await callGenerateWithProjectRepair({
             accessToken: resolvedAccessToken,
             projectId: resolvedProjectId,
+            cacheKey: account.id,
             systemPrompt,
             userPrompt,
             deadlineAt
           });
+          resolvedProjectId = generated.projectId;
           await recordAccountSuccess(account.id, LOCKED_MODEL).catch(() => {});
-          return text;
+          return generated.value;
         } catch (error) {
           lastError = error;
           const status = Number(error?.status) || 500;
@@ -456,7 +507,15 @@ export async function generateCriticText({ systemPrompt, userPrompt }) {
     throw new Error("No active Antigravity accounts. Add an account in the dashboard or configure a legacy token.");
   }
   const { accessToken, projectId } = await resolveCredential(legacy, deadlineAt);
-  return callGenerate({ accessToken, projectId, systemPrompt, userPrompt, deadlineAt });
+  const generated = await callGenerateWithProjectRepair({
+    accessToken,
+    projectId,
+    cacheKey: legacy.id,
+    systemPrompt,
+    userPrompt,
+    deadlineAt
+  });
+  return generated.value;
 }
 
 export async function getConfigurationStatus() {
