@@ -22,6 +22,7 @@ function publicAccount(account) {
     id: account.id,
     email: account.email,
     projectId: account.projectId,
+    oauthClientType: account.oauthClientType || "antigravity",
     enabled: account.enabled !== false,
     status: account.status || "ready",
     failures: Number(account.failures ?? 0),
@@ -36,17 +37,19 @@ export async function listAccounts() {
   return (await readAccounts()).map(publicAccount);
 }
 
-export async function addAccount({ email, projectId, refreshToken }) {
+export async function addAccount({ email, projectId, refreshToken, oauthClientType = "antigravity" }) {
   if (!refreshToken?.trim()) throw new Error("Refresh token is required");
   const accounts = await readAccounts();
   const normalizedEmail = String(email || "Antigravity account").trim().slice(0, 200);
   const normalizedProject = String(projectId || "").trim().slice(0, 300);
+  const normalizedClientType = oauthClientType === "web" ? "web" : "antigravity";
   const existing = accounts.find((account) => account.email === normalizedEmail && normalizedEmail !== "Antigravity account");
   const now = Date.now();
   const record = {
     id: existing?.id || crypto.randomUUID(),
     email: normalizedEmail,
     projectId: normalizedProject || existing?.projectId || "",
+    oauthClientType: normalizedClientType,
     refreshToken: encryptSecret(refreshToken.trim()),
     enabled: true,
     status: "ready",
@@ -94,6 +97,7 @@ export async function getAccountForRequest() {
   const selected = chooseNextAccount(accounts, Math.max(0, sequence - 1));
   return {
     ...selected.account,
+    oauthClientType: selected.account.oauthClientType || "antigravity",
     refreshTokenPlain: decryptSecret(selected.account.refreshToken)
   };
 }
