@@ -14,6 +14,7 @@ const DEFAULT_ENDPOINTS = [
   "https://cloudcode-pa.googleapis.com"
 ];
 const TOKEN_URL = "https://oauth2.googleapis.com/token";
+const QUOTA_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 export const LOCKED_MODEL = "gemini-3.8-flash-high";
 export const UPSTREAM_LOCKED_MODEL = "gemini-3.8-flash-high(high)";
 const TOKEN_CACHE_MS = 5 * 60 * 1000;
@@ -94,6 +95,16 @@ export function parseUpstreamRetryHints(responseHeaders, bodyText = "", now = Da
     retryAfterMs: retryAfterMs > 0 ? retryAfterMs : null,
     resetsAtMs: resetsAtMs > now ? resetsAtMs : null
   };
+}
+
+export function parseAntigravityQuotaReset(data, model = LOCKED_MODEL, now = Date.now()) {
+  const info = data?.models?.[model]?.quotaInfo;
+  if (!info) return null;
+  const remaining = Number(info.remainingFraction);
+  if (!Number.isFinite(remaining) || remaining > 0) return null;
+  const rawReset = info.resetTime ?? info.resetAt;
+  const resetAtMs = typeof rawReset === "number" ? rawReset : Date.parse(String(rawReset || ""));
+  return Number.isFinite(resetAtMs) && resetAtMs > now ? resetAtMs : null;
 }
 
 export function hasRetryBudget(deadlineAt, now = Date.now(), minimumMs = MIN_RETRY_BUDGET_MS) {
@@ -186,6 +197,28 @@ async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey =
     }
   }
   throw lastError ?? new Error("Could not discover Antigravity project ID");
+}
+
+async function fetchAntigravityQuotaReset(accessToken, projectId, deadlineAt) {
+  if (!accessToken || !hasRetryBudget(deadlineAt, Date.now(), 4_000)) return null;
+  try {
+    const response = await fetch(QUOTA_ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        "Content-Type": "application/json",
+        "User-Agent": "antigravity/1.16.5 linux/x64",
+        "X-Client-Name": "antigravity",
+        "X-Client-Version": "1.16.5"
+      },
+      body: JSON.stringify(projectId ? { project: projectId } : {}),
+      signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 6_000))
+    });
+    if (!response.ok) return null;
+    return parseAntigravityQuotaReset(await response.json(), LOCKED_MODEL);
+  } catch {
+    return null;
+  }
 }
 
 export function buildGenerateEnvelope({ projectId, model = LOCKED_MODEL, systemPrompt, userPrompt }) {
@@ -364,19 +397,38 @@ export async function generateCriticText({ systemPrompt, userPrompt }) {
         if (!account) break;
         excludedIds.add(account.id);
 
+        let resolvedAccessToken = null;
+        let resolvedProjectId = null;
         try {
-          const { accessToken, projectId } = await resolveCredential(account, deadlineAt);
-          const text = await callGenerate({ accessToken, projectId, systemPrompt, userPrompt, deadlineAt });
+          const resolved = await resolveCredential(account, deadlineAt);
+          resolvedAccessToken = resolved.accessToken;
+          resolvedProjectId = resolved.projectId;
+          const text = await callGenerate({
+            accessToken: resolvedAccessToken,
+            projectId: resolvedProjectId,
+            systemPrompt,
+            userPrompt,
+            deadlineAt
+          });
           await recordAccountSuccess(account.id, LOCKED_MODEL).catch(() => {});
           return text;
         } catch (error) {
           lastError = error;
           const status = Number(error?.status) || 500;
+          let resetsAtMs = error?.resetsAtMs;
+          if ((status === 409 || status === 429) && !resetsAtMs && resolvedAccessToken) {
+            resetsAtMs = await fetchAntigravityQuotaReset(
+              resolvedAccessToken,
+              resolvedProjectId,
+              deadlineAt
+            );
+            if (resetsAtMs) error.resetsAtMs = resetsAtMs;
+          }
           await recordAccountFailure(account.id, {
             status,
             model: LOCKED_MODEL,
             retryAfterMs: error?.retryAfterMs,
-            resetsAtMs: error?.resetsAtMs,
+            resetsAtMs,
             errorText: error?.message
           }).catch(() => {});
           if (!shouldFailover(status)) throw error;
