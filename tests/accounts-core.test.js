@@ -69,6 +69,13 @@ test("OAuth credentials support existing ANTIGRAVITY_CLIENT aliases", () => {
   );
 });
 
+test("OAuth credentials support the exact misspelled Vercel names already in this project", () => {
+  assert.deepEqual(
+    resolveOAuthCredentials({ ANTIGRAVIT_CLIENT_ID: "id", ANTIGRAVIT_ENT_SECRET: "secret" }),
+    { clientId: "id", clientSecret: "secret" }
+  );
+});
+
 test("provider-native Antigravity OAuth is the default and matches 9router scopes", () => {
   assert.equal(ANTIGRAVITY_NATIVE_REDIRECT_URI, "http://localhost:51121/oauth-callback");
   assert.deepEqual(ANTIGRAVITY_NATIVE_SCOPES, [
