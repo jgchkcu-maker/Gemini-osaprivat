@@ -14,20 +14,48 @@ export const ANTIGRAVITY_NATIVE_SCOPES = [
 ];
 const ENDPOINTS = ["https://daily-cloudcode-pa.googleapis.com", "https://cloudcode-pa.googleapis.com"];
 
+function firstNonEmpty(env, names) {
+  for (const name of names) {
+    const value = String(env?.[name] ?? "").trim();
+    if (value) return value;
+  }
+  return "";
+}
+
+function fuzzyAntigravityEnv(env, kind) {
+  const entries = Object.entries(env ?? {});
+  const candidates = entries
+    .map(([key, value]) => ({
+      key: key.toUpperCase().replace(/[^A-Z0-9]/g, ""),
+      value: String(value ?? "").trim()
+    }))
+    .filter(({ key, value }) => value && key.startsWith("ANTIGRAV"));
+
+  if (kind === "clientId") {
+    const match = candidates.find(({ key }) => key.includes("CLIENT") && key.endsWith("ID"));
+    return match?.value ?? "";
+  }
+
+  const match = candidates.find(({ key }) =>
+    key.includes("SECRET") && (key.includes("CLIENT") || key.includes("OAUTH") || key.includes("ENT"))
+  );
+  return match?.value ?? "";
+}
+
 export function resolveOAuthCredentials(env = process.env) {
-  const clientId = (
-    env.ANTIGRAVITY_OAUTH_CLIENT_ID
-    || env.ANTIGRAVITY_CLIENT_ID
-    || env.ANTIGRAVIT_CLIENT_ID
-    || ""
-  ).trim();
-  const clientSecret = (
-    env.ANTIGRAVITY_OAUTH_CLIENT_SECRET
-    || env.ANTIGRAVITY_CLIENT_SECRET
-    || env.ANTIGRAVIT_CLIENT_SECRET
-    || env.ANTIGRAVIT_ENT_SECRET
-    || ""
-  ).trim();
+  const clientId = firstNonEmpty(env, [
+    "ANTIGRAVITY_OAUTH_CLIENT_ID",
+    "ANTIGRAVITY_CLIENT_ID",
+    "ANTIGRAVIT_CLIENT_ID"
+  ]) || fuzzyAntigravityEnv(env, "clientId");
+
+  const clientSecret = firstNonEmpty(env, [
+    "ANTIGRAVITY_OAUTH_CLIENT_SECRET",
+    "ANTIGRAVITY_CLIENT_SECRET",
+    "ANTIGRAVIT_CLIENT_SECRET",
+    "ANTIGRAVIT_ENT_SECRET"
+  ]) || fuzzyAntigravityEnv(env, "clientSecret");
+
   return { clientId, clientSecret };
 }
 
