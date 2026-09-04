@@ -3,7 +3,7 @@
 Gemini Critic Control adapts implementation patterns and interoperability details from the following open-source projects:
 
 - **9router** — https://github.com/decolua/9router — sticky account rotation, model-specific cooldown concepts, Antigravity OAuth/provider metadata, quota reset discovery and failover behavior.
-- **OmniRoute** — https://github.com/diegosouzapw/OmniRoute — Antigravity account fallback/error-handling and OAuth interoperability concepts.
+- **OmniRoute** — https://github.com/diegosouzapw/OmniRoute — Antigravity account fallback/error-handling and OAuth interoperability concepts. `src/accounts/public-credentials.js` adapts OmniRoute's masked public native OAuth credential pattern/constants for Antigravity.
 
 Both projects are licensed under the MIT License.
 
