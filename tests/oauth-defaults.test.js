@@ -14,7 +14,7 @@ test("provider-native Antigravity OAuth has embedded public defaults when env is
   assert.equal(isOAuthConfigured({}), true);
 });
 
-test("explicit Antigravity env credentials override embedded public defaults", () => {
+test("explicit complete Antigravity env credentials override embedded public defaults", () => {
   assert.deepEqual(
     resolveOAuthCredentials({
       ANTIGRAVITY_CLIENT_ID: "override-id",
@@ -24,13 +24,13 @@ test("explicit Antigravity env credentials override embedded public defaults", (
   );
 });
 
-test("partial Antigravity env override never mixes with embedded defaults", () => {
-  const env = { ANTIGRAVITY_CLIENT_ID: "override-id" };
-  assert.deepEqual(
-    resolveOAuthCredentials(env),
-    { clientId: "override-id", clientSecret: "" }
-  );
-  assert.equal(isOAuthConfigured(env), false);
+test("partial Antigravity env override falls back to the complete embedded pair", () => {
+  const credentials = resolveOAuthCredentials({ ANTIGRAVITY_CLIENT_ID: "stale-partial-id" });
+
+  assert.notEqual(credentials.clientId, "stale-partial-id");
+  assert.match(credentials.clientId, /\.apps\.googleusercontent\.com$/);
+  assert.match(credentials.clientSecret, /^GOCSPX-/);
+  assert.equal(isOAuthConfigured({ ANTIGRAVITY_CLIENT_ID: "stale-partial-id" }), true);
 });
 
 test("embedded native defaults do not make custom Web OAuth configured", () => {
