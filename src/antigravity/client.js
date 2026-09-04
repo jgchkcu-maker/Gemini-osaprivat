@@ -21,6 +21,8 @@ const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const QUOTA_ENDPOINT = "https://daily-cloudcode-pa.googleapis.com/v1internal:fetchAvailableModels";
 export const LOCKED_MODEL = "gemini-3.8-flash-high";
 export const UPSTREAM_LOCKED_MODEL = "gemini-3.8-flash-high(high)";
+export const ANTIGRAVITY_IDE_VERSION = "2.11.0";
+export const ANTIGRAVITY_IDE_USER_AGENT = `antigravity/ide/${ANTIGRAVITY_IDE_VERSION} darwin/arm64`;
 const TOKEN_CACHE_MS = 5 * 60 * 1000;
 const TOTAL_REQUEST_BUDGET_MS = 45_000;
 const MIN_RETRY_BUDGET_MS = 8_000;
@@ -47,12 +49,18 @@ function clientMetadata() {
   return JSON.stringify({ ideType: 9, platform: 3, pluginType: 2 });
 }
 
-function headers(accessToken, accept = "application/json") {
+export function buildAntigravityGenerationHeaders(accessToken, accept = "application/json") {
   return {
     Authorization: `Bearer ${accessToken}`,
     "Content-Type": "application/json",
     Accept: accept,
-    "User-Agent": "antigravity/1.16.5 linux/x64",
+    "User-Agent": ANTIGRAVITY_IDE_USER_AGENT
+  };
+}
+
+function projectHeaders(accessToken, accept = "application/json") {
+  return {
+    ...buildAntigravityGenerationHeaders(accessToken, accept),
     "X-Goog-Api-Client": "google-cloud-sdk vscode_cloudshelleditor/0.1",
     "Client-Metadata": clientMetadata(),
     "x-request-source": "local"
@@ -175,7 +183,7 @@ async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey =
     try {
       const response = await fetch(`${endpoint}/v1internal:loadCodeAssist`, {
         method: "POST",
-        headers: headers(accessToken),
+        headers: projectHeaders(accessToken),
         body: JSON.stringify({ metadata: { ideType: 9, platform: 3, pluginType: 2 } }),
         signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 12_000))
       });
@@ -211,9 +219,9 @@ async function fetchAntigravityQuotaReset(accessToken, projectId, deadlineAt) {
       headers: {
         Authorization: `Bearer ${accessToken}`,
         "Content-Type": "application/json",
-        "User-Agent": "antigravity/1.16.5 linux/x64",
+        "User-Agent": ANTIGRAVITY_IDE_USER_AGENT,
         "X-Client-Name": "antigravity",
-        "X-Client-Version": "1.16.5"
+        "X-Client-Version": ANTIGRAVITY_IDE_VERSION
       },
       body: JSON.stringify(projectId ? { project: projectId } : {}),
       signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 6_000))
@@ -324,7 +332,7 @@ async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt, 
     try {
       const streamResponse = await fetch(`${endpoint}/v1internal:streamGenerateContent?alt=sse`, {
         method: "POST",
-        headers: headers(accessToken, "text/event-stream"),
+        headers: buildAntigravityGenerationHeaders(accessToken, "text/event-stream"),
         body: JSON.stringify(envelope),
         signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt))
       });
@@ -352,7 +360,7 @@ async function callGenerate({ accessToken, projectId, systemPrompt, userPrompt, 
     try {
       const response = await fetch(`${endpoint}/v1internal:generateContent`, {
         method: "POST",
-        headers: headers(accessToken),
+        headers: buildAntigravityGenerationHeaders(accessToken),
         body: JSON.stringify(envelope),
         signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 15_000))
       });
