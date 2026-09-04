@@ -222,20 +222,31 @@ async function fetchAntigravityQuotaReset(accessToken, projectId, deadlineAt) {
 }
 
 export function buildGenerateEnvelope({ projectId, model = LOCKED_MODEL, systemPrompt, userPrompt }) {
+  const sessionId = crypto.randomUUID();
+  const conversationId = crypto.randomUUID();
+  const trajectoryId = crypto.randomUUID();
+
   return {
     project: projectId,
-    model: UPSTREAM_LOCKED_MODEL,
+    // `(high)` is an internal model preset. The Cloud Code wire model is the
+    // literal public entity id; High is carried in thinkingConfig instead.
+    model: LOCKED_MODEL,
     request: {
       contents: [{ role: "user", parts: [{ text: userPrompt }] }],
       systemInstruction: { role: "user", parts: [{ text: systemPrompt }] },
       generationConfig: {
         maxOutputTokens: 4096,
-        temperature: 0.2
-      }
+        temperature: 0.2,
+        thinkingConfig: {
+          thinkingLevel: "high",
+          includeThoughts: true
+        }
+      },
+      sessionId
     },
     userAgent: "antigravity",
     requestType: "agent",
-    requestId: `agent-${crypto.randomUUID()}`
+    requestId: `agent/${conversationId}/${Date.now()}/${trajectoryId}/1`
   };
 }
 

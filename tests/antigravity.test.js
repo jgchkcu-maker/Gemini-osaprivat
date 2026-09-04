@@ -19,7 +19,7 @@ test("composite refresh tokens are parsed", () => {
   });
 });
 
-test("request is text-only, has no tools, and maps locked High model to current upstream id", () => {
+test("request is text-only and sends Gemini 3.8 High in current Antigravity wire format", () => {
   const envelope = buildGenerateEnvelope({
     projectId: "p",
     model: "some-other-model",
@@ -28,7 +28,20 @@ test("request is text-only, has no tools, and maps locked High model to current 
   });
   assert.equal(LOCKED_MODEL, "gemini-3.8-flash-high");
   assert.equal(UPSTREAM_LOCKED_MODEL, "gemini-3.8-flash-high(high)");
-  assert.equal(envelope.model, UPSTREAM_LOCKED_MODEL);
+
+  // The `(high)` suffix is an internal preset, not a literal upstream entity id.
+  // Current 9router strips it from body.model and expresses High via thinkingConfig.
+  assert.equal(envelope.model, LOCKED_MODEL);
+  assert.deepEqual(envelope.request.generationConfig.thinkingConfig, {
+    thinkingLevel: "high",
+    includeThoughts: true
+  });
+
+  assert.match(envelope.request.sessionId, /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i);
+  assert.match(
+    envelope.requestId,
+    /^agent\/[0-9a-f-]{36}\/\d+\/[0-9a-f-]{36}\/1$/i
+  );
   assert.equal(envelope.requestType, "agent");
   assert.equal(envelope.request.tools, undefined);
   assert.equal(envelope.request.systemInstruction.parts[0].text, "critic only");
