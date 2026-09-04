@@ -4,6 +4,7 @@ import {
   buildGenerateEnvelope,
   hasRetryBudget,
   LOCKED_MODEL,
+  parseAntigravityQuotaReset,
   parseCompositeRefreshToken,
   parseSseText,
   parseUpstreamRetryHints,
@@ -63,6 +64,39 @@ test("retry hints parse Google-style retry delay from body", () => {
   );
   assert.equal(hint.retryAfterMs, 7500);
   assert.equal(hint.resetsAtMs, null);
+});
+
+test("Antigravity quota response yields exact reset only when locked model is exhausted", () => {
+  const now = Date.parse("2026-09-04T07:00:00Z");
+  const reset = "2026-09-04T08:00:00Z";
+  assert.equal(
+    parseAntigravityQuotaReset(
+      {
+        models: {
+          "gemini-3.8-flash-high": {
+            quotaInfo: { remainingFraction: 0, resetTime: reset }
+          }
+        }
+      },
+      LOCKED_MODEL,
+      now
+    ),
+    Date.parse(reset)
+  );
+  assert.equal(
+    parseAntigravityQuotaReset(
+      {
+        models: {
+          "gemini-3.8-flash-high": {
+            quotaInfo: { remainingFraction: 0.25, resetTime: reset }
+          }
+        }
+      },
+      LOCKED_MODEL,
+      now
+    ),
+    null
+  );
 });
 
 test("deadline guard stops account rotation when there is not enough request budget", () => {
