@@ -18,6 +18,13 @@ test("Redis credentials support canonical Upstash names", () => {
   );
 });
 
+test("Redis credentials support Vercel custom STORAGE prefix", () => {
+  assert.deepEqual(
+    resolveRedisCredentials({ STORAGE_URL: "https://redis.example", STORAGE_TOKEN: "token" }),
+    { url: "https://redis.example", token: "token" }
+  );
+});
+
 test("account refresh tokens are encrypted and can be recovered", () => {
   const encrypted = encryptSecret("refresh-token", "a sufficiently long encryption seed");
   assert.notEqual(encrypted, "refresh-token");
