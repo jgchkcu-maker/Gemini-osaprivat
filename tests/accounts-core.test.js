@@ -76,6 +76,13 @@ test("OAuth credentials support the exact misspelled Vercel names already in thi
   );
 });
 
+test("OAuth credentials tolerate unknown Antigravity env typos by semantic key matching", () => {
+  assert.deepEqual(
+    resolveOAuthCredentials({ ANTIGRAVTY_LOGIN_CLIENT_ID: "id", ANTIGRAVTY_LOGIN_CLIENT_SECRET: "secret" }),
+    { clientId: "id", clientSecret: "secret" }
+  );
+});
+
 test("provider-native Antigravity OAuth is the default and matches 9router scopes", () => {
   assert.equal(ANTIGRAVITY_NATIVE_REDIRECT_URI, "http://localhost:51121/oauth-callback");
   assert.deepEqual(ANTIGRAVITY_NATIVE_SCOPES, [
