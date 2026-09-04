@@ -119,6 +119,50 @@ export function parseAntigravityQuotaReset(data, model = LOCKED_MODEL, now = Dat
   return Number.isFinite(resetAtMs) && resetAtMs > now ? resetAtMs : null;
 }
 
+export function summarizeAntigravityModels(data, lockedModel = LOCKED_MODEL) {
+  const models = data?.models && typeof data.models === "object" ? data.models : {};
+  const locked = models?.[lockedModel];
+  const remaining = Number(locked?.quotaInfo?.remainingFraction);
+  const nearbyModelIds = Object.keys(models)
+    .filter((modelId) => /^gemini-3\.(?:6|7|8)-flash(?:-|$)/.test(modelId))
+    .sort()
+    .slice(0, 16);
+
+  return {
+    lockedModelPresent: Boolean(locked),
+    lockedModelHasQuota: Boolean(locked?.quotaInfo),
+    lockedRemainingFraction: Number.isFinite(remaining) ? remaining : null,
+    nearbyModelIds
+  };
+}
+
+export function formatAntigravity404Diagnostic({
+  oauthClientType,
+  projectPresent,
+  modelsStatus,
+  modelSummary
+} = {}) {
+  const summary = modelSummary || summarizeAntigravityModels({});
+  const remaining = summary.lockedRemainingFraction == null
+    ? "none"
+    : String(summary.lockedRemainingFraction);
+  const nearby = Array.isArray(summary.nearbyModelIds) && summary.nearbyModelIds.length > 0
+    ? summary.nearbyModelIds.join(",")
+    : "none";
+
+  return [
+    "Antigravity 404 diagnostics:",
+    `oauth=${oauthClientType === "web" ? "web" : "antigravity"}`,
+    `client=${ANTIGRAVITY_IDE_VERSION}`,
+    `project=${projectPresent ? "present" : "missing"}`,
+    `modelsStatus=${String(modelsStatus ?? "unavailable")}`,
+    `lockedModelPresent=${Boolean(summary.lockedModelPresent)}`,
+    `lockedModelHasQuota=${Boolean(summary.lockedModelHasQuota)}`,
+    `lockedRemainingFraction=${remaining}`,
+    `nearbyModels=${nearby}`
+  ].join(" ");
+}
+
 export function hasRetryBudget(deadlineAt, now = Date.now(), minimumMs = MIN_RETRY_BUDGET_MS) {
   return Number(deadlineAt) - Number(now) >= Number(minimumMs);
 }
@@ -211,18 +255,22 @@ async function discoverProjectId(accessToken, explicitProjectId = "", cacheKey =
   throw lastError ?? new Error("Could not discover Antigravity project ID");
 }
 
+function quotaHeaders(accessToken) {
+  return {
+    Authorization: `Bearer ${accessToken}`,
+    "Content-Type": "application/json",
+    "User-Agent": ANTIGRAVITY_IDE_USER_AGENT,
+    "X-Client-Name": "antigravity",
+    "X-Client-Version": ANTIGRAVITY_IDE_VERSION
+  };
+}
+
 async function fetchAntigravityQuotaReset(accessToken, projectId, deadlineAt) {
   if (!accessToken || !hasRetryBudget(deadlineAt, Date.now(), 4_000)) return null;
   try {
     const response = await fetch(QUOTA_ENDPOINT, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
-        "User-Agent": ANTIGRAVITY_IDE_USER_AGENT,
-        "X-Client-Name": "antigravity",
-        "X-Client-Version": ANTIGRAVITY_IDE_VERSION
-      },
+      headers: quotaHeaders(accessToken),
       body: JSON.stringify(projectId ? { project: projectId } : {}),
       signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 6_000))
     });
@@ -230,6 +278,41 @@ async function fetchAntigravityQuotaReset(accessToken, projectId, deadlineAt) {
     return parseAntigravityQuotaReset(await response.json(), LOCKED_MODEL);
   } catch {
     return null;
+  }
+}
+
+async function fetchAntigravity404Diagnostic({ accessToken, projectId, oauthClientType, deadlineAt }) {
+  const fallbackSummary = summarizeAntigravityModels({});
+  if (!accessToken || !hasRetryBudget(deadlineAt, Date.now(), 4_000)) {
+    return formatAntigravity404Diagnostic({
+      oauthClientType,
+      projectPresent: Boolean(projectId),
+      modelsStatus: "skipped",
+      modelSummary: fallbackSummary
+    });
+  }
+
+  try {
+    const response = await fetch(QUOTA_ENDPOINT, {
+      method: "POST",
+      headers: quotaHeaders(accessToken),
+      body: JSON.stringify(projectId ? { project: projectId } : {}),
+      signal: AbortSignal.timeout(timeoutForDeadline(deadlineAt, 6_000))
+    });
+    const data = response.ok ? await response.json().catch(() => ({})) : {};
+    return formatAntigravity404Diagnostic({
+      oauthClientType,
+      projectPresent: Boolean(projectId),
+      modelsStatus: response.status,
+      modelSummary: summarizeAntigravityModels(data)
+    });
+  } catch {
+    return formatAntigravity404Diagnostic({
+      oauthClientType,
+      projectPresent: Boolean(projectId),
+      modelsStatus: "error",
+      modelSummary: fallbackSummary
+    });
   }
 }
 
@@ -486,6 +569,15 @@ export async function generateCriticText({ systemPrompt, userPrompt }) {
           lastError = error;
           const status = Number(error?.status) || 500;
           let resetsAtMs = error?.resetsAtMs;
+          if (status === 404 && resolvedAccessToken && error && typeof error === "object") {
+            const diagnostic = await fetchAntigravity404Diagnostic({
+              accessToken: resolvedAccessToken,
+              projectId: resolvedProjectId,
+              oauthClientType: account.oauthClientType,
+              deadlineAt
+            }).catch(() => null);
+            if (diagnostic) error.message = `${error.message}\n${diagnostic}`;
+          }
           if ((status === 409 || status === 429) && !resetsAtMs && resolvedAccessToken) {
             resetsAtMs = await fetchAntigravityQuotaReset(
               resolvedAccessToken,
