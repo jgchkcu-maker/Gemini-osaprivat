@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { resolveRedisCredentials } from "../src/accounts/redis.js";
 import { encryptSecret, decryptSecret } from "../src/accounts/crypto.js";
-import { parseOAuthCallback } from "../src/accounts/oauth.js";
+import { parseOAuthCallback, resolveOAuthCredentials } from "../src/accounts/oauth.js";
 
 test("Redis credentials support Vercel KV integration names", () => {
   assert.deepEqual(
@@ -22,6 +22,13 @@ test("Redis credentials support Vercel custom STORAGE prefix", () => {
   assert.deepEqual(
     resolveRedisCredentials({ STORAGE_URL: "https://redis.example", STORAGE_TOKEN: "token" }),
     { url: "https://redis.example", token: "token" }
+  );
+});
+
+test("OAuth credentials support existing ANTIGRAVITY_CLIENT aliases", () => {
+  assert.deepEqual(
+    resolveOAuthCredentials({ ANTIGRAVITY_CLIENT_ID: "id", ANTIGRAVITY_CLIENT_SECRET: "secret" }),
+    { clientId: "id", clientSecret: "secret" }
   );
 });
 
